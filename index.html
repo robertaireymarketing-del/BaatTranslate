@@ -228,26 +228,71 @@
   .row button { flex: 1; min-height: 48px; border-radius: 12px; border: 1px solid var(--line); background: var(--bg); }
   .row button.primary { background: var(--you); color: var(--on-accent); border: 0; font-weight: 700; }
 
-  /* Listen: reply in English (pinned to the bottom, in thumb reach) */
-  #listenView { padding-bottom: 104px; }
-  .reply-bar {
-    position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
-    padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px));
-    background: linear-gradient(to top, var(--bg) 70%, transparent);
+  /* Listen: app-style screen — controls on top, conversation in the middle, dock always at the bottom */
+  body.listen-mode { overflow: hidden; }
+  body.listen-mode main {
+    height: calc(100vh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)); /* older iPhones */
+    height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    display: flex; flex-direction: column; padding-bottom: 0;
   }
+  body.listen-mode header, body.listen-mode .tabs, body.listen-mode .status { flex: none; }
+  body.listen-mode .tabs { margin-bottom: 10px; }
+  body.listen-mode .status { margin-bottom: 6px; min-height: 0; }
+  body.listen-mode .status:empty { display: none; }
+  #listenView:not([hidden]) { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .lang-pick.compact { margin-bottom: 10px; flex: none; }
+  .lang-pick.compact .lang-seg button { min-height: 40px; }
+  #transcript {
+    flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
+    margin-bottom: 0; border-radius: 22px 22px 0 0; padding-top: 12px;
+  }
+  .tr-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 4px; }
+  .tr-acts { display: flex; gap: 6px; }
+  #transcript .empty { margin-top: 10px; line-height: 1.5; }
+
+  .dock {
+    flex: none; background: var(--surface); border-top: 1px solid var(--line);
+    border-radius: 0 0 22px 22px; padding: 10px 12px 12px; margin-bottom: 8px;
+    box-shadow: 0 -8px 20px rgba(10,20,51,.12);
+  }
+  /* Who it's listening to right now */
+  .now {
+    display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 8px 12px; border-radius: 14px;
+    background: var(--bg); font-weight: 700; font-size: 17px; color: var(--muted);
+  }
+  .now-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--muted); flex: none; opacity: .5; }
+  .now-text { flex: 1; min-width: 0; }
+  .now-meta { font-size: 13px; font-weight: 400; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .now[data-mode="room"] { color: var(--her); background: color-mix(in srgb, var(--her) 14%, var(--bg)); }
+  .now[data-mode="room"] .now-dot { background: var(--her); opacity: 1; animation: blink 1.4s infinite; }
+  .now[data-mode="you"] { color: #fff; background: var(--rec); }
+  .now[data-mode="you"] .now-dot { background: #fff; opacity: 1; animation: blink .8s infinite; }
+  .now[data-mode="you"] .now-meta { color: rgba(255,255,255,.85); }
+  .now[data-mode="busy"] .now-dot { background: var(--you); opacity: 1; animation: blink .6s infinite; }
+  .now[data-mode="busy"] { color: var(--you); }
+  .now[data-mode="speaking"] { color: var(--on-accent); background: var(--you); }
+  .now[data-mode="speaking"] .now-dot { background: var(--on-accent); opacity: 1; }
+  .now[data-mode="speaking"] .now-meta { color: inherit; opacity: .85; }
+  .dock .meter { margin-top: 8px; }
+
+  .dock-btns { display: grid; grid-template-columns: 1fr 1.6fr; gap: 10px; margin-top: 10px; }
+  .dock .live-btn { min-height: 68px; font-size: 18px; border-radius: 18px; gap: 8px; }
+  .dock .live-btn .stop-shape { display: none; }
+  .dock .live-btn[data-on="true"] .mic-shape { display: none; }
+  .dock .live-btn[data-on="true"] .stop-shape { display: block; }
   .reply-btn {
-    display: flex; align-items: center; justify-content: center; gap: 12px;
-    width: 100%; max-width: 524px; margin: 0 auto; min-height: 72px; border: 0; border-radius: 20px;
-    background: var(--you); color: var(--on-accent); font-weight: 700; font-size: 20px;
-    box-shadow: 0 6px 20px rgba(14,34,100,.28); position: relative;
+    display: flex; align-items: center; justify-content: center; gap: 10px;
+    width: 100%; min-height: 68px; border: 0; border-radius: 18px; padding: 0 10px;
+    background: var(--you); color: var(--on-accent); font-weight: 700; font-size: 18px; line-height: 1.15;
+    position: relative;
   }
-  .reply-btn svg { width: 26px; height: 26px; flex: none; }
+  .reply-btn svg { width: 24px; height: 24px; flex: none; }
   .reply-btn .stop-shape, .reply-btn .dots { display: none; }
   .reply-btn[data-state="rec"] { background: var(--rec); color: #fff; }
   .reply-btn[data-state="rec"] .mic-shape { display: none; }
   .reply-btn[data-state="rec"] .stop-shape { display: block; }
   .reply-btn[data-state="rec"]::after {
-    content: ""; position: absolute; inset: -6px; border-radius: 24px;
+    content: ""; position: absolute; inset: -5px; border-radius: 22px;
     border: 3px solid var(--rec); animation: pulse 1.2s ease-out infinite;
   }
   .reply-btn[data-state="busy"] { background: var(--muted); }
@@ -255,10 +300,13 @@
   .reply-btn[data-state="busy"] .dots { display: flex; gap: 6px; }
   .reply-btn .dots span { width: 9px; height: 9px; }
   .reply-btn[data-state="speaking"] { background: var(--her); }
+  @media (prefers-reduced-motion: reduce) { .reply-btn::after, .now-dot { animation: none !important; } }
   #liveList .mine .en { color: var(--you); font-size: 18px; }
-  #liveList .mine-ur { margin: 4px 0 0; font-family: "Noto Nastaliq Urdu", serif; font-size: 28px; line-height: 2.2; direction: rtl; text-align: right; }
+  #liveList .mine-row { display: flex; align-items: center; gap: 12px; }
+  #liveList .mine-play { width: 56px; height: 56px; background: var(--you); color: var(--on-accent); border-color: var(--you); }
+  #liveList .mine-play svg { width: 24px; height: 24px; }
+  #liveList .mine-ur { flex: 1; margin: 4px 0 0; font-family: "Noto Nastaliq Urdu", serif; font-size: 28px; line-height: 2.2; direction: rtl; text-align: right; }
   #liveList .mine-roman { margin: 0; font-size: 18px; font-weight: 700; color: var(--you); }
-  @media (prefers-reduced-motion: reduce) { .reply-btn::after { animation: none !important; } }
 
   /* Listen: how sure each caption is, red (0) to green (100) */
   #liveList li.scored {
@@ -273,6 +321,8 @@
     color: #fff; background: hsl(var(--conf-h) 65% 38%);
   }
 
+  #liveList .said-en, #liveList .conf { white-space: nowrap; }
+  #liveList .line-foot { flex-wrap: wrap; row-gap: 6px; }
   #liveList .said-en {
     font-size: 12px; font-weight: 700; padding: 1px 8px; border-radius: 999px; margin-left: 6px;
     border: 1.5px solid var(--you); color: var(--you);
@@ -407,43 +457,45 @@
 
   <!-- ===== LISTEN ===== -->
   <div id="listenView" role="tabpanel" hidden>
-    <div class="lang-pick">
-      <span class="lp-label" id="listenLangLabel">What's being spoken</span>
-      <div class="lang-seg" role="radiogroup" aria-labelledby="listenLangLabel" data-for="listen">
+    <div class="lang-pick compact">
+      <div class="lang-seg" role="radiogroup" aria-label="What's being spoken" data-for="listen">
         <button role="radio" data-lang="urdu">Urdu</button>
         <button role="radio" data-lang="punjabi">Punjabi</button>
         <button role="radio" data-lang="mirpuri">Mirpuri mix</button>
       </div>
     </div>
-    <section class="side">
-      <button class="live-btn" id="liveBtn" data-on="false">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v4"/></svg>
-        <span id="liveLabel">Start listening</span>
-      </button>
-      <div class="meter" aria-hidden="true"><i id="meterBar"></i></div>
-      <div class="stats">
-        <div class="stat"><b id="sessTime">0:00</b><span>this session</span></div>
-        <div class="stat"><b id="monthCost">£0.00</b><span>spent this month</span></div>
-      </div>
-      <p class="live-state" id="liveState">Put the phone in the middle of the table. To answer, tap Reply in English at the bottom, speak, and pause. It says it for you, then carries on listening.</p>
-    </section>
 
+    <!-- The conversation scrolls here, between the controls and the dock -->
     <section class="side transcript hide-orig" id="transcript">
-      <h2><span>What's being said</span>
+      <div class="tr-head">
         <label class="switch"><input type="checkbox" id="showOrig"> Show Urdu</label>
-      </h2>
+        <span class="tr-acts"><button class="link-btn" id="liveCopyAll">Copy all</button><button class="link-btn" id="liveClear">Clear</button></span>
+      </div>
       <ol id="liveList"></ol>
-      <p class="empty" id="liveEmpty">Tap Start listening and the English will appear here as people talk.</p>
-      <div class="row"><button id="liveCopyAll">Copy all</button><button id="liveClear">Clear transcript</button></div>
+      <p class="empty" id="liveEmpty">Put the phone in the middle of the table and tap Listen. What people say appears here in English. To answer, tap Reply in English, speak, and pause — it says it for you, then carries on listening.</p>
     </section>
 
-    <div class="reply-bar">
-      <button class="reply-btn" id="replyBtn" data-state="idle">
-        <svg class="mic-shape" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v4"/></svg>
-        <svg class="stop-shape" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
-        <span class="dots" aria-hidden="true"><span></span><span></span><span></span></span>
-        <span id="replyLabel">Reply in English</span>
-      </button>
+    <!-- Always on screen -->
+    <div class="dock">
+      <div class="now" id="nowPill" data-mode="off" role="status" aria-live="polite">
+        <span class="now-dot" aria-hidden="true"></span>
+        <span class="now-text" id="nowText">Not listening</span>
+        <span class="now-meta"><span id="sessTime">0:00</span> · <span id="monthCost">£0.00</span></span>
+      </div>
+      <div class="meter" aria-hidden="true"><i id="meterBar"></i></div>
+      <div class="dock-btns">
+        <button class="live-btn" id="liveBtn" data-on="false">
+          <svg class="mic-shape" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v4"/></svg>
+          <svg class="stop-shape" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+          <span id="liveLabel">Listen</span>
+        </button>
+        <button class="reply-btn" id="replyBtn" data-state="idle">
+          <svg class="mic-shape" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v4"/></svg>
+          <svg class="stop-shape" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+          <span class="dots" aria-hidden="true"><span></span><span></span><span></span></span>
+          <span id="replyLabel">Reply in English</span>
+        </button>
+      </div>
     </div>
   </div>
 </main>
@@ -456,11 +508,12 @@
     <option value="normal">Normal</option>
     <option value="slow">Slower</option>
   </select>
-  <label for="voiceSel">Voice</label>
+  <label for="voiceSel">Voice for her side (English)</label>
   <select id="voiceSel">
     <option value="female">Female</option>
     <option value="male">Male</option>
   </select>
+  <p class="note">What you say in Urdu always plays in a male voice.</p>
 
   <button class="wide-btn" id="wordsBtn">Family words &amp; names</button>
   <p class="note">Names and Mirpuri words the app should always get right. Shared with everyone using the app.</p>
@@ -702,6 +755,7 @@ document.querySelectorAll(".lang-seg").forEach((seg) => {
       else state.listenLang = b.dataset.lang;
       renderLangPickers();
       saveSettings();
+      if (typeof updateNow === "function") updateNow();
     };
   });
 });
@@ -896,11 +950,14 @@ async function speakAndWait(text, lang) {
     player.addEventListener("pause", end);
   });
 }
+// Urdu is always Robert talking to her, so it's always the male voice.
+// The Voice setting only chooses the English voice that reads out her side.
 async function speak(text, lang) {
-  const key = lang + "|" + state.gender + "|" + state.speed + "|" + text;
+  const gender = lang === "ur" ? "male" : state.gender;
+  const key = lang + "|" + gender + "|" + state.speed + "|" + text;
   let url = audioCache.get(key);
   if (!url) {
-    url = URL.createObjectURL(await api("speak", { text, lang, gender: state.gender, speed: state.speed }, true));
+    url = URL.createObjectURL(await api("speak", { text, lang, gender, speed: state.speed }, true));
     audioCache.set(key, url);
     trackAzureTts(text.length);
   }
@@ -913,6 +970,7 @@ function setStatus(msg) { $("#status").textContent = msg || ""; }
 
 function showTab(which) {
   const listen = which === "listen";
+  document.body.classList.toggle("listen-mode", listen);
   $("#talkView").hidden = listen;
   $("#listenView").hidden = !listen;
   $("#tabTalk").setAttribute("aria-selected", String(!listen));
@@ -1319,7 +1377,8 @@ function removeLine(line) { live.lines = live.lines.filter((l) => l !== line); r
 
 function renderLive() {
   const list = $("#liveList");
-  const nearBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 160;
+  const box = $("#transcript");
+  const nearBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 160;
   list.innerHTML = "";
   live.lines.forEach((l) => {
     const li = document.createElement("li");
@@ -1336,19 +1395,32 @@ function renderLive() {
       if (l.state === "done") {
         const acts = document.createElement("span");
         acts.style.cssText = "display:flex;gap:8px;align-items:center";
-        const p = document.createElement("button");
-        p.className = "fix-btn"; p.textContent = "Play";
-        p.onclick = async () => { unlock(); try { await speak(l.orig, "ur"); } catch (e) { setStatus(e.message); } };
-        acts.append(copyBtn("Copy", () => l.orig), p);
+        acts.append(copyBtn("Copy", () => l.orig));
         foot.append(acts);
       }
       const en = document.createElement("p");
       en.className = "en"; en.textContent = l.en;
       li.append(foot, en);
       if (l.orig) {
+        const row = document.createElement("div");
+        row.className = "mine-row";
         const o = document.createElement("p");
         o.className = "mine-ur"; o.lang = "ur"; o.textContent = l.orig;
-        li.append(o);
+        const p = document.createElement("button");
+        p.className = "replay you-c mine-play";
+        p.setAttribute("aria-label", "Play in Urdu, male voice");
+        p.innerHTML = PLAY_SVG;
+        p.onclick = async () => {
+          if (replyState !== "idle") return; // you're mid-reply
+          unlock(); setStatus("");
+          if (live.on && !live.paused) pauseMic(); // so the room listener doesn't caption the phone
+          setReply("speaking");
+          try { await speakAndWait(l.orig, "ur"); } catch (e) { setStatus(e.message); }
+          setReply("idle");
+          if (live.on && live.paused) await resumeMic();
+        };
+        row.append(o, p);
+        li.append(row);
       }
       if (l.roman) {
         const r = document.createElement("p");
@@ -1393,7 +1465,7 @@ function renderLive() {
     list.append(li);
   });
   $("#liveEmpty").hidden = live.lines.length > 0;
-  if (live.on && nearBottom) window.scrollTo(0, document.body.scrollHeight);
+  if (nearBottom) scrollLive();
 }
 
 /* Start / stop */
@@ -1432,9 +1504,9 @@ async function startLive() {
   await requestWakeLock();
 
   $("#liveBtn").dataset.on = "true";
-  $("#liveLabel").textContent = "Stop listening";
+  $("#liveLabel").textContent = "Stop";
   $("#tabDot").hidden = false;
-  $("#liveState").textContent = "Listening. Keep this screen open — if you leave Safari or lock the phone, it stops hearing.";
+  updateNow();
   tickLive();
 }
 
@@ -1463,9 +1535,9 @@ async function stopLive() {
   live.wakeLock = null;
   $("#meterBar").style.width = "0";
   $("#liveBtn").dataset.on = "false";
-  $("#liveLabel").textContent = "Start listening";
+  $("#liveLabel").textContent = "Listen";
   $("#tabDot").hidden = true;
-  $("#liveState").textContent = "Stopped. Nothing is being heard or charged now.";
+  updateNow();
 }
 
 $("#liveBtn").onclick = () => (live.on ? stopLive() : startLive());
@@ -1479,16 +1551,34 @@ let replyState = "idle"; // idle | rec | busy | speaking
 
 const REPLY_LABELS = {
   idle: "Reply in English",
-  rec: "Listening to you… pause when done",
+  rec: "Done",
   busy: "Translating…",
-  speaking: "Speaking… tap to stop",
+  speaking: "Stop voice",
 };
+
+function scrollLive() { const b = $("#transcript"); b.scrollTop = b.scrollHeight; }
+
+// The bar above the buttons: says plainly who the phone is listening to right now.
+function updateNow() {
+  const pill = $("#nowPill");
+  if (!pill) return;
+  const lang = LANGS[state.listenLang] || "";
+  let mode, text;
+  if (replyState === "rec") { mode = "you"; text = "Listening to YOU — speak English, then pause"; }
+  else if (replyState === "busy") { mode = "busy"; text = "Translating what you said…"; }
+  else if (replyState === "speaking") { mode = "speaking"; text = "Saying it to her in " + lang + "…"; }
+  else if (live.on) { mode = "room"; text = "Listening to them · " + lang; }
+  else { mode = "off"; text = "Not listening"; }
+  pill.dataset.mode = mode;
+  $("#nowText").textContent = text;
+}
 function setReply(s) {
   replyState = s;
   const b = $("#replyBtn");
   b.dataset.state = s;
   b.disabled = s === "busy";
   $("#replyLabel").textContent = REPLY_LABELS[s];
+  updateNow();
 }
 
 // Free the mic so the reply plays on the loudspeaker and isn't heard back as room speech.
@@ -1553,11 +1643,11 @@ async function finishReply() {
 
     const lang = state.listenLang;
     const line = addLiveLine({ who: "you", en: said });
-    window.scrollTo(0, document.body.scrollHeight);
+    scrollLive();
     const res = await api("translate", { text: said, direction: "to", lang, context: liveContext(6), knowledge: knowledgePayload() });
     trackClaude(res);
     finishLine(line, { en: said, orig: res.text, roman: res.roman || "" });
-    window.scrollTo(0, document.body.scrollHeight);
+    scrollLive();
 
     setReply("speaking");
     await speakAndWait(res.text, "ur");
@@ -1743,6 +1833,7 @@ $("#clearBtn").onclick = async () => {
 
 /* ---------- Start up ---------- */
 renderLangPickers();
+updateNow();
 if (get("showOrig", "")) { $("#showOrig").checked = true; $("#transcript").classList.remove("hide-orig"); }
 </script>
 </body>
