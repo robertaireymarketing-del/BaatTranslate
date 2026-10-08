@@ -696,7 +696,7 @@ async function startApp(user) {
     kn.words = s.docs.map((d) => ({ id: d.id, ...d.data() }));
     if ($("#wordsDialog").open) renderWords();
   }));
-  unsubs.push(onSnapshot(query(collection(db, "fixes"), orderBy("ts", "desc"), limit(200)), (s) => {
+  unsubs.push(onSnapshot(query(collection(db, "fixes"), orderBy("ts", "desc"), limit(5000)), (s) => {
     kn.fixes = s.docs.map((d) => ({ id: d.id, ...d.data() })).reverse();
   }));
 
@@ -805,10 +805,40 @@ function setCopyRow(id, buttons) {
 }
 
 /* What the server needs to translate with the family's knowledge. */
-function knowledgePayload() {
+/* Every fix is kept forever. Each translation is sent the fixes whose words match what's
+   being translated right now (however old), plus the newest few — so an old fix comes
+   back the moment the same words are said again, without sending hundreds every time. */
+const FIX_RELEVANT = 25, FIX_RECENT = 8;
+const words = (t) => String(t || "").toLowerCase()
+  .replace(/[\u064B-\u065F\u0670]/g, "")            // Urdu diacritics
+  .split(/[\s.,!?;:'"()\[\]،۔؟!\-–—]+/).filter((w) => w.length > 1);
+const COMMON = new Set("the a an to and of is it in i you he she we they my your me be do have for on at that this was are main mein ne ki ka ke ko se hai hain ho tha thi aur ye yeh woh wo kya nahi nai to bhi ہے ہیں کا کی کے کو سے نے میں اور یہ وہ تو بھی نہیں کیا تھا".split(" "));
+
+function pickFixes(dir, queryText) {
+  const pool = kn.fixes.filter((f) => f.dir === dir);
+  const q = new Set(words(queryText).filter((w) => !COMMON.has(w)));
+  const scored = [];
+  if (q.size) {
+    pool.forEach((f, i) => {
+      const fw = new Set(words(f.source + " " + (f.wrong || "")).filter((w) => !COMMON.has(w)));
+      let hit = 0;
+      fw.forEach((w) => { if (q.has(w)) hit++; });
+      if (hit) scored.push({ f, i, score: hit / Math.sqrt(fw.size || 1) });
+    });
+  }
+  scored.sort((a, b) => b.score - a.score || b.i - a.i);
+  const chosen = new Set(scored.slice(0, FIX_RELEVANT).map((x) => x.f));
+  pool.slice(-FIX_RECENT).forEach((f) => chosen.add(f));
+  // keep them in time order, oldest first, so a later fix overrides an earlier one
+  return pool.filter((f) => chosen.has(f));
+}
+
+// dir: "in" (what she says) or "out" (what you say). queryText: what is being translated.
+function knowledgePayload(dir, queryText) {
+  const fixes = dir ? pickFixes(dir, queryText) : kn.fixes.slice(-FIX_RECENT * 2);
   return {
     words: kn.words.slice(-200).map((w) => ({ term: w.term, meaning: w.meaning || "" })),
-    fixes: kn.fixes.slice(-120).map((f) => ({ dir: f.dir, source: f.source || "", right: f.right, note: f.note || "" })),
+    fixes: fixes.map((f) => ({ dir: f.dir, source: f.source || "", right: f.right, note: f.note || "" })),
   };
 }
 const whisperHint = () => kn.words.map((w) => w.term).join("، ").slice(0, 500);
@@ -1070,7 +1100,7 @@ async function sayIt() {
   btn.disabled = true;
   try {
     const lang = state.talkLang;
-    const res = await api("translate", { text: en, direction: "to", lang, context: talkContext(), knowledge: knowledgePayload() });
+    const res = await api("translate", { text: en, direction: "to", lang, context: talkContext(), knowledge: knowledgePayload("out", en) });
     trackClaude(res);
     $("#outText").textContent = res.text;
     $("#outRoman").textContent = res.roman || "";
@@ -1188,7 +1218,7 @@ async function handleRecording() {
       setStatus("Nothing was picked up. Tap the mic and try again, holding the phone a little closer.");
       return;
     }
-    const res = await api("translate", { direction: "from", lang, ur: heard.ur, pa: heard.pa, en: heard.en || "", context: talkContext(), knowledge: knowledgePayload() });
+    const res = await api("translate", { direction: "from", lang, ur: heard.ur, pa: heard.pa, en: heard.en || "", context: talkContext(), knowledge: knowledgePayload("in", [heard.ur, heard.pa, heard.en].join(" ")) });
     trackClaude(res);
     if (!res.text) {
       setMic("idle");
@@ -1340,7 +1370,7 @@ async function pump() {
 
   try {
     const context = liveContext(4);
-    const res = await api("translate", { direction: "live", lang: state.listenLang, text: heard, heardLang, context, knowledge: knowledgePayload() });
+    const res = await api("translate", { direction: "live", lang: state.listenLang, text: heard, heardLang, context, knowledge: knowledgePayload("in", heard) });
     trackClaude(res);
     if (!res.text || res.text.trim() === "-") removeLine(line);
     else finishLine(line, { en: res.text, orig: heard, confidence: res.confidence, saidEnglish: res.saidEnglish });
@@ -1644,7 +1674,7 @@ async function finishReply() {
     const lang = state.listenLang;
     const line = addLiveLine({ who: "you", en: said });
     scrollLive();
-    const res = await api("translate", { text: said, direction: "to", lang, context: liveContext(6), knowledge: knowledgePayload() });
+    const res = await api("translate", { text: said, direction: "to", lang, context: liveContext(6), knowledge: knowledgePayload("out", said) });
     trackClaude(res);
     finishLine(line, { en: said, orig: res.text, roman: res.roman || "" });
     scrollLive();
@@ -1751,7 +1781,7 @@ $("#fixSave").onclick = async () => {
       setStatus("");
     } else {
       // Re-translate with the fix now included, then play it.
-      const res = await api("translate", { text: f.source, direction: "to", lang: f.item.lang || state.talkLang, context: talkContext(), knowledge: knowledgePayload() });
+      const res = await api("translate", { text: f.source, direction: "to", lang: f.item.lang || state.talkLang, context: talkContext(), knowledge: knowledgePayload("out", f.source) });
       trackClaude(res);
       f.item.other = res.text;
       f.item.roman = res.roman || "";
