@@ -275,7 +275,7 @@
   .now[data-mode="speaking"] .now-meta { color: inherit; opacity: .85; }
   .dock .meter { margin-top: 8px; }
 
-  .dock-btns { display: grid; grid-template-columns: 1fr 1.6fr; gap: 10px; margin-top: 10px; }
+  .dock-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
   .dock .live-btn { min-height: 68px; font-size: 18px; border-radius: 18px; gap: 8px; }
   .dock .live-btn .stop-shape { display: none; }
   .dock .live-btn[data-on="true"] .mic-shape { display: none; }
@@ -283,7 +283,7 @@
   .reply-btn {
     display: flex; align-items: center; justify-content: center; gap: 10px;
     width: 100%; min-height: 68px; border: 0; border-radius: 18px; padding: 0 10px;
-    background: var(--you); color: var(--on-accent); font-weight: 700; font-size: 18px; line-height: 1.15;
+    background: var(--you); color: var(--on-accent); font-weight: 700; font-size: 17px; line-height: 1.15;
     position: relative;
   }
   .reply-btn svg { width: 24px; height: 24px; flex: none; }
@@ -1259,12 +1259,13 @@ const VAD = {
   minThreshold: 0.012,  // ignore anything quieter than this
   overNoise: 3,         // speech must be this many times louder than the room's background
   preRoll: 0.4,         // seconds kept from just before speech starts
-  endSilence: 0.8,      // pause that ends a chunk (once it's at least minChunk long)
-  longSilence: 1.6,     // pause that ends a chunk whatever its length
-  minChunk: 4,          // seconds
+  endSilence: 0.55,     // pause that ends a chunk (once it's at least minChunk long)
+  longSilence: 1.0,     // pause that ends a chunk whatever its length
+  minChunk: 2.5,        // seconds
   maxChunk: 14,         // seconds
   minSpeech: 0.5,       // chunks with less speech than this are dropped
-  minGap: 3.2,          // seconds between sends (keeps under Groq's 20-per-minute free limit)
+  minGap: 0.8,          // seconds between sends normally
+  slowGap: 3.2,         // after Groq says "too many" (free plan: 20 a minute), back off to this for a minute
 };
 
 const live = {
@@ -1273,6 +1274,7 @@ const live = {
   noise: 0.004, inSpeech: false, parts: [], partLen: 0, speechLen: 0, silenceLen: 0, pre: [], preLen: 0,
   queue: [], sending: false, lastSendAt: 0,
   lines: [],
+  slowUntil: 0,    // back-off after a "too many requests" from Groq
   paused: false,   // mic released while the phone speaks your reply
   reply: null,     // { parts, len, speech, silence } while you're speaking English
 };
@@ -1342,7 +1344,8 @@ function endChunk() {
 
 async function pump() {
   if (live.sending || !live.queue.length) return;
-  const wait = VAD.minGap * 1000 - (Date.now() - live.lastSendAt);
+  const gap = Date.now() < live.slowUntil ? VAD.slowGap : VAD.minGap;
+  const wait = gap * 1000 - (Date.now() - live.lastSendAt);
   if (wait > 0) { setTimeout(pump, wait); return; }
 
   // Bundle everything waiting into one request (up to ~25 s) to save on the 10-second minimum.
@@ -1362,11 +1365,21 @@ async function pump() {
     for (let i = 0; i < (res.passes || 1); i++) trackGroq(samples.length / RATE);
     heard = res.text; heardLang = res.language || "";
   } catch (e) {
-    finishLine(line, null, e.status === 429 ? "Too much at once — missed a bit." : "Couldn't hear this bit.");
+    if (e.status === 429) {
+      // Hit Groq's per-minute limit: put the audio back, slow down for a minute, and try again — nothing is lost.
+      live.slowUntil = Date.now() + 60000;
+      live.queue.unshift(samples);
+      removeLine(line);
+      live.sending = false;
+      setTimeout(pump, VAD.slowGap * 1000);
+      return;
+    }
+    finishLine(line, null, "Couldn't hear this bit.");
   }
   live.sending = false;
   if (live.queue.length) pump();
   if (!heard) { if (line.state === "pending") removeLine(line); return; }
+  line.orig = heard; line.en = "Translating…"; renderLive(); // show progress straight away
 
   try {
     const context = liveContext(4);
@@ -1499,6 +1512,11 @@ function renderLive() {
 }
 
 /* Start / stop */
+// Netlify functions go to sleep when idle; a tiny request on Start wakes them before anyone speaks.
+function warmUp() {
+  api("live-listen", {}).catch(() => {});
+  api("translate", { direction: "live", text: "" }).catch(() => {});
+}
 async function requestWakeLock() {
   try { if ("wakeLock" in navigator) live.wakeLock = await navigator.wakeLock.request("screen"); } catch {}
 }
@@ -1527,6 +1545,7 @@ async function startLive() {
   live.source.connect(live.node);
   live.node.connect(live.ctx.destination); // outputs silence; needed for Safari to run the processor
 
+  warmUp();
   live.on = true;
   live.noise = 0.004; live.inSpeech = false; live.pre = []; live.preLen = 0;
   live.startedAt = live.lastTickAt = Date.now();
