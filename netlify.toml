@@ -1,3 +1,8 @@
 [build]
   publish = "."
   functions = "netlify/functions"
+
+[build.environment]
+  # These values are meant to be public (they also appear in firebase-config.js and firestore.rules),
+  # so Netlify's secret scan shouldn't block the deploy because of them.
+  SECRETS_SCAN_OMIT_KEYS = "FIREBASE_PROJECT_ID,ALLOWED_EMAILS"
