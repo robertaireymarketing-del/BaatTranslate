@@ -228,6 +228,38 @@
   .row button { flex: 1; min-height: 48px; border-radius: 12px; border: 1px solid var(--line); background: var(--bg); }
   .row button.primary { background: var(--you); color: var(--on-accent); border: 0; font-weight: 700; }
 
+  /* Listen: reply in English (pinned to the bottom, in thumb reach) */
+  #listenView { padding-bottom: 104px; }
+  .reply-bar {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
+    padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px));
+    background: linear-gradient(to top, var(--bg) 70%, transparent);
+  }
+  .reply-btn {
+    display: flex; align-items: center; justify-content: center; gap: 12px;
+    width: 100%; max-width: 524px; margin: 0 auto; min-height: 72px; border: 0; border-radius: 20px;
+    background: var(--you); color: var(--on-accent); font-weight: 700; font-size: 20px;
+    box-shadow: 0 6px 20px rgba(14,34,100,.28); position: relative;
+  }
+  .reply-btn svg { width: 26px; height: 26px; flex: none; }
+  .reply-btn .stop-shape, .reply-btn .dots { display: none; }
+  .reply-btn[data-state="rec"] { background: var(--rec); color: #fff; }
+  .reply-btn[data-state="rec"] .mic-shape { display: none; }
+  .reply-btn[data-state="rec"] .stop-shape { display: block; }
+  .reply-btn[data-state="rec"]::after {
+    content: ""; position: absolute; inset: -6px; border-radius: 24px;
+    border: 3px solid var(--rec); animation: pulse 1.2s ease-out infinite;
+  }
+  .reply-btn[data-state="busy"] { background: var(--muted); }
+  .reply-btn[data-state="busy"] .mic-shape { display: none; }
+  .reply-btn[data-state="busy"] .dots { display: flex; gap: 6px; }
+  .reply-btn .dots span { width: 9px; height: 9px; }
+  .reply-btn[data-state="speaking"] { background: var(--her); }
+  #liveList .mine .en { color: var(--you); font-size: 18px; }
+  #liveList .mine-ur { margin: 4px 0 0; font-family: "Noto Nastaliq Urdu", serif; font-size: 28px; line-height: 2.2; direction: rtl; text-align: right; }
+  #liveList .mine-roman { margin: 0; font-size: 18px; font-weight: 700; color: var(--you); }
+  @media (prefers-reduced-motion: reduce) { .reply-btn::after { animation: none !important; } }
+
   /* Language picker */
   .lang-pick { margin-bottom: 16px; }
   .lang-pick .lp-label { display: block; font-size: 15px; font-weight: 700; color: var(--muted); margin: 0 4px 6px; }
@@ -373,7 +405,7 @@
         <div class="stat"><b id="sessTime">0:00</b><span>this session</span></div>
         <div class="stat"><b id="monthCost">£0.00</b><span>spent this month</span></div>
       </div>
-      <p class="live-state" id="liveState">Put the phone in the middle of the room. One person at a time works best, with the TV off.</p>
+      <p class="live-state" id="liveState">Put the phone in the middle of the table. To answer, tap Reply in English at the bottom, speak, and pause. It says it for you, then carries on listening.</p>
     </section>
 
     <section class="side transcript hide-orig" id="transcript">
@@ -384,6 +416,15 @@
       <p class="empty" id="liveEmpty">Tap Start listening and the English will appear here as people talk.</p>
       <div class="row"><button id="liveCopyAll">Copy all</button><button id="liveClear">Clear transcript</button></div>
     </section>
+
+    <div class="reply-bar">
+      <button class="reply-btn" id="replyBtn" data-state="idle">
+        <svg class="mic-shape" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v4"/></svg>
+        <svg class="stop-shape" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+        <span class="dots" aria-hidden="true"><span></span><span></span><span></span></span>
+        <span id="replyLabel">Reply in English</span>
+      </button>
+    </div>
   </div>
 </main>
 
@@ -824,6 +865,17 @@ const SILENT = URL.createObjectURL(new Blob([encodeWav(new Float32Array(1600), 1
 function unlock() { player.src = SILENT; player.play().catch(() => {}); }
 
 const audioCache = new Map();
+// Speak, then wait until the voice has actually finished (or 30 s, whichever first).
+async function speakAndWait(text, lang) {
+  await speak(text, lang); // resolves once playback has started
+  if (player.ended || player.paused) return;
+  await new Promise((res) => {
+    const end = () => { player.removeEventListener("ended", end); player.removeEventListener("pause", end); clearTimeout(t); res(); };
+    const t = setTimeout(end, 30000);
+    player.addEventListener("ended", end);
+    player.addEventListener("pause", end);
+  });
+}
 async function speak(text, lang) {
   const key = lang + "|" + state.gender + "|" + state.speed + "|" + text;
   let url = audioCache.get(key);
@@ -1107,6 +1159,8 @@ const live = {
   noise: 0.004, inSpeech: false, parts: [], partLen: 0, speechLen: 0, silenceLen: 0, pre: [], preLen: 0,
   queue: [], sending: false, lastSendAt: 0,
   lines: [],
+  paused: false,   // mic released while the phone speaks your reply
+  reply: null,     // { parts, len, speech, silence } while you're speaking English
 };
 
 function downsample(input, inRate) {
@@ -1200,7 +1254,7 @@ async function pump() {
   if (!heard) { if (line.state === "pending") removeLine(line); return; }
 
   try {
-    const context = live.lines.filter((l) => l.state === "done").slice(-4).map((l) => l.en);
+    const context = liveContext(4);
     const res = await api("translate", { direction: "live", lang: state.listenLang, text: heard, context, knowledge: knowledgePayload() });
     trackClaude(res);
     if (!res.text || res.text.trim() === "-") removeLine(line);
@@ -1211,8 +1265,8 @@ async function pump() {
 }
 
 /* Transcript — finished lines are backed up to Firestore */
-function addLiveLine() {
-  const line = { id: newId(), ts: Date.now(), state: "pending", en: "…", orig: "" };
+function addLiveLine(extra = {}) {
+  const line = { id: newId(), ts: Date.now(), state: "pending", en: "…", orig: "", ...extra };
   live.lines.push(line);
   renderLive();
   return line;
@@ -1220,10 +1274,16 @@ function addLiveLine() {
 function finishLine(line, data, err) {
   if (data) {
     line.state = "done"; line.en = data.en; line.orig = data.orig;
-    if (uid) setDoc(doc(userCol("live"), line.id), { ts: line.ts, en: line.en, orig: line.orig }).catch(() => {});
+    if (data.roman) line.roman = data.roman;
+    const rec = { ts: line.ts, en: line.en, orig: line.orig };
+    if (line.who) { rec.who = line.who; rec.roman = line.roman || ""; }
+    if (uid) setDoc(doc(userCol("live"), line.id), rec).catch(() => {});
   } else { line.state = "failed"; line.en = err; }
   renderLive();
 }
+// Recent captions given to the translator, so replies and captions follow the conversation.
+const liveContext = (n) => live.lines.filter((l) => l.state === "done").slice(-n)
+  .map((l) => (l.who === "you" ? "Robert: " : "") + l.en);
 function removeLine(line) { live.lines = live.lines.filter((l) => l !== line); renderLive(); }
 
 function renderLive() {
@@ -1238,6 +1298,35 @@ function renderLive() {
     const t = document.createElement("time");
     t.textContent = new Date(l.ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
     foot.append(t);
+    if (l.who === "you") {
+      // Your reply: English you said, then the translation in big Urdu letters she can read off the screen.
+      li.classList.add("mine");
+      t.textContent = "You · " + t.textContent;
+      if (l.state === "done") {
+        const acts = document.createElement("span");
+        acts.style.cssText = "display:flex;gap:8px;align-items:center";
+        const p = document.createElement("button");
+        p.className = "fix-btn"; p.textContent = "Play";
+        p.onclick = async () => { unlock(); try { await speak(l.orig, "ur"); } catch (e) { setStatus(e.message); } };
+        acts.append(copyBtn("Copy", () => l.orig), p);
+        foot.append(acts);
+      }
+      const en = document.createElement("p");
+      en.className = "en"; en.textContent = l.en;
+      li.append(foot, en);
+      if (l.orig) {
+        const o = document.createElement("p");
+        o.className = "mine-ur"; o.lang = "ur"; o.textContent = l.orig;
+        li.append(o);
+      }
+      if (l.roman) {
+        const r = document.createElement("p");
+        r.className = "mine-roman"; r.textContent = l.roman;
+        li.append(r);
+      }
+      list.append(li);
+      return;
+    }
     if (l.state === "done") {
       const acts = document.createElement("span");
       acts.style.cssText = "display:flex;gap:8px;align-items:center";
@@ -1282,7 +1371,11 @@ async function startLive() {
   live.source = live.ctx.createMediaStreamSource(live.stream);
   live.node = live.ctx.createScriptProcessor(4096, 1, 1);
   const inRate = live.ctx.sampleRate;
-  live.node.onaudioprocess = (e) => { if (live.on) onFrame(downsample(e.inputBuffer.getChannelData(0), inRate)); };
+  live.node.onaudioprocess = (e) => {
+    if (!live.on || live.paused) return;
+    const f = downsample(e.inputBuffer.getChannelData(0), inRate);
+    live.reply ? onReplyFrame(f) : onFrame(f);
+  };
   live.source.connect(live.node);
   live.node.connect(live.ctx.destination); // outputs silence; needed for Safari to run the processor
 
@@ -1313,6 +1406,8 @@ async function stopLive() {
   if (!live.on) return;
   if (live.inSpeech) endChunk(); // send whatever was mid-sentence
   live.on = false;
+  live.reply = null; live.paused = false;
+  if (replyState === "rec") setReply("idle");
   clearInterval(live.tick);
   tickLive(); saveUsage(); pushUsage(true);
   try { live.node.disconnect(); live.source.disconnect(); } catch {}
@@ -1328,6 +1423,117 @@ async function stopLive() {
 }
 
 $("#liveBtn").onclick = () => (live.on ? stopLive() : startLive());
+
+/* ================= LISTEN: reply in English =================
+   One tap: the room listener pauses and your English is recorded. It finishes on its own
+   when you pause (or tap again), then the phone says it out loud in the chosen language,
+   shows it in big letters, and goes straight back to listening to the room. */
+const REPLY = { endSilence: 1.3, minSpeech: 0.4, maxLen: 30, giveUp: 10 };
+let replyState = "idle"; // idle | rec | busy | speaking
+
+const REPLY_LABELS = {
+  idle: "Reply in English",
+  rec: "Listening to you… pause when done",
+  busy: "Translating…",
+  speaking: "Speaking… tap to stop",
+};
+function setReply(s) {
+  replyState = s;
+  const b = $("#replyBtn");
+  b.dataset.state = s;
+  b.disabled = s === "busy";
+  $("#replyLabel").textContent = REPLY_LABELS[s];
+}
+
+// Free the mic so the reply plays on the loudspeaker and isn't heard back as room speech.
+function pauseMic() {
+  live.paused = true;
+  live.inSpeech = false; live.parts = []; live.partLen = 0; live.pre = []; live.preLen = 0;
+  try { live.source.disconnect(); } catch {}
+  live.stream?.getTracks().forEach((t) => t.stop());
+  $("#meterBar").style.width = "0";
+}
+async function resumeMic() {
+  if (!live.on) return;
+  try {
+    live.stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+    live.source = live.ctx.createMediaStreamSource(live.stream);
+    live.source.connect(live.node);
+    try { await live.ctx.resume(); } catch {}
+    live.paused = false;
+  } catch {
+    live.paused = false;
+    await stopLive();
+    setStatus("Couldn't get the microphone back. Tap Start listening to carry on.");
+  }
+}
+
+function onReplyFrame(frame) {
+  let sum = 0;
+  for (let i = 0; i < frame.length; i++) sum += frame[i] * frame[i];
+  const rms = Math.sqrt(sum / frame.length);
+  $("#meterBar").style.width = Math.min(100, rms * 900) + "%";
+  const r = live.reply, n = frame.length;
+  const loud = rms > Math.max(VAD.minThreshold, live.noise * VAD.overNoise);
+  r.parts.push(frame); r.len += n;
+  if (loud) { r.speech += n; r.silence = 0; } else r.silence += n;
+  const len = r.len / RATE, speech = r.speech / RATE, silence = r.silence / RATE;
+  if ((speech >= REPLY.minSpeech && silence >= REPLY.endSilence) || len >= REPLY.maxLen) finishReply();
+  else if (speech < 0.15 && len >= REPLY.giveUp) cancelReply("Didn't hear anything. Tap Reply and speak.");
+}
+
+function cancelReply(msg) {
+  live.reply = null;
+  setReply("idle");
+  if (msg) setStatus(msg);
+}
+
+async function finishReply() {
+  const r = live.reply;
+  if (!r) return;
+  live.reply = null;
+  setReply("busy");
+  pauseMic();
+  try {
+    if (r.speech / RATE < REPLY.minSpeech) { setStatus("Didn't catch that. Tap Reply and try again."); return; }
+    const samples = concat(r.parts);
+    live.lastSendAt = Date.now();
+    const heard = await api("live-listen", { audio: toB64(encodeWav(samples, RATE)), lang: "en", hint: whisperHint() });
+    trackGroq(samples.length / RATE);
+    const said = (heard.text || "").trim();
+    if (!said) { setStatus("Didn't catch that. Tap Reply and try again."); return; }
+
+    const lang = state.listenLang;
+    const line = addLiveLine({ who: "you", en: said });
+    window.scrollTo(0, document.body.scrollHeight);
+    const res = await api("translate", { text: said, direction: "to", lang, context: liveContext(6), knowledge: knowledgePayload() });
+    trackClaude(res);
+    finishLine(line, { en: said, orig: res.text, roman: res.roman || "" });
+    window.scrollTo(0, document.body.scrollHeight);
+
+    setReply("speaking");
+    await speakAndWait(res.text, "ur");
+  } catch (e) {
+    setStatus(e.message);
+  } finally {
+    setReply("idle");
+    await resumeMic();
+  }
+}
+
+$("#replyBtn").onclick = async () => {
+  unlock(); // lets the iPhone play the answer later without another tap
+  setStatus("");
+  if (replyState === "rec") { finishReply(); return; }
+  if (replyState === "speaking") { player.pause(); return; }
+  if (replyState === "busy") return;
+  if (!live.on) { await startLive(); if (!live.on) return; }
+  if (live.inSpeech) endChunk(); // send what the room was saying first
+  live.reply = { parts: [], len: 0, speech: 0, silence: 0 };
+  setReply("rec");
+};
 
 document.addEventListener("visibilitychange", async () => {
   if (document.visibilityState === "hidden") pushUsage(true);
@@ -1350,7 +1556,7 @@ async function deleteAll(col) {
 }
 $("#liveCopyAll").onclick = async () => {
   const text = live.lines.filter((l) => l.state === "done")
-    .map((l) => new Date(l.ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) + "  " + l.en).join("\n");
+    .map((l) => new Date(l.ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) + "  " + (l.who === "you" ? "You: " : "") + l.en).join("\n");
   if (!text) return;
   const b = $("#liveCopyAll");
   if (await copyText(text)) { b.textContent = "Copied"; setTimeout(() => (b.textContent = "Copy all"), 1400); }
