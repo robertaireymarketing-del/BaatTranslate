@@ -61,6 +61,47 @@ const contextBlock = (ctx, label) =>
       ctx.slice(-6).map((c) => "- " + String(c).slice(0, 300)).join("\n") + "\n\n"
     : "";
 
+const CONFIDENCE =
+  "Also rate how sure you are, from 0 to 100, that your English matches what was actually meant. Be honest and strict: " +
+  "90-100 only when the transcript is clear and the meaning is unambiguous; 65-89 when it is mostly clear but you filled in a word or two; " +
+  "35-64 when you had to reconstruct a good part of it from mangled words or context; below 35 when it is largely a guess. " +
+  "Lower the score whenever you add (unclear), when the two recognisers disagree, or when the transcript looks garbled.";
+
+const TOOLS = {
+  caption: {
+    name: "caption",
+    description: "Return the English translation of what was said.",
+    input_schema: {
+      type: "object",
+      properties: {
+        english: { type: "string", description: "The English translation only. No notes, reasoning, quotes or explanations." },
+        confidence: { type: "integer", minimum: 0, maximum: 100, description: "How sure you are that the English is what was meant." },
+        junk: { type: "boolean", description: "True if the transcript is recogniser junk with nothing real to translate." },
+      },
+      required: ["english", "confidence", "junk"],
+    },
+  },
+  say: {
+    name: "say",
+    description: "Return what should be spoken to her, plus the Roman-letters version.",
+    input_schema: {
+      type: "object",
+      properties: {
+        spoken: { type: "string", description: "Exactly the words to be spoken, in Urdu script. Nothing else." },
+        roman: { type: "string", description: "The same sentence in Roman letters, as people text it." },
+      },
+      required: ["spoken", "roman"],
+    },
+  },
+};
+
+// Last line of defence: strip wrapping quotes or a label like "Translation:" if one ever slips in.
+const clean = (s) =>
+  String(s ?? "").trim()
+    .replace(/^(english|translation|caption|spoken|roman)\s*:\s*/i, "")
+    .replace(/^["“”'](.*)["“”']$/s, "$1")
+    .trim();
+
 export default async (req) => {
   const who = await requireUser(req);
   if (who.error) return who.error;
@@ -71,6 +112,7 @@ export default async (req) => {
   let system, userText;
   let model = process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5";
 
+  let tool;
   if (body.direction === "to") {
     const text = (body.text || "").trim();
     if (!text) return new Response("Nothing to translate", { status: 400 });
@@ -78,27 +120,28 @@ export default async (req) => {
     system =
       `${LISTENER} Translate the English after "Translate this:" into ${TO[lang]} ` +
       "It will be read aloud by a voice, so write exactly what should be spoken: warm, natural and clear. Keep names as they are. " +
-      "In the spoken part use no brackets, notes, alternatives or English letters. " +
-      `Then write a line containing only ### and, after it, the same sentence ${ROMAN[lang]} — English letters, casual everyday spellings, ` +
-      "no accents or special symbols. It must match the spoken part word for word in meaning. " +
-      "Output only those two parts." +
+      "In the spoken text use no brackets, notes, alternatives or English letters. " +
+      `Also give the same sentence ${ROMAN[lang]} — English letters, casual everyday spellings, no accents or special symbols, ` +
+      "matching the spoken text word for word in meaning. Answer only by calling the say tool." +
       NOT_INSTRUCTIONS + notesFor(knowledge, "to");
+    tool = TOOLS.say;
   } else if (body.direction === "live") {
     model = process.env.ANTHROPIC_LIVE_MODEL || "claude-haiku-4-5";
     const text = (body.text || "").trim();
-    if (!text) return Response.json({ text: "-", usage: null, model });
+    if (!text) return Response.json({ text: "-", confidence: 0, usage: null, model });
     userText = contextBlock(body.context, "Recent captions") + "New transcript:\n" + text;
     system =
       "You are live-captioning a conversation in a family home in Britain. " + ROOM[lang] + " " +
       "Work out what was most likely said and translate it into natural, plain British English. " +
       "Don't add speaker names or commentary. If part is genuinely unclear, give your best guess and put (unclear) after it. " +
       "If the transcript is recogniser junk — a lone filler sound, one phrase repeated over and over, or typical hallucinations such as " +
-      "thanks for watching, please subscribe, subtitle credits or music — output exactly - and nothing else. " +
-      "Output only the English." + NOT_INSTRUCTIONS + notesFor(knowledge, "in");
+      "thanks for watching, please subscribe, subtitle credits or music — set junk to true. " +
+      CONFIDENCE + " Answer only by calling the caption tool." + NOT_INSTRUCTIONS + notesFor(knowledge, "in");
+    tool = TOOLS.caption;
   } else {
     const ur = (body.ur || "").trim();
     const pa = (body.pa || "").trim();
-    if (!ur && !pa) return Response.json({ text: "", usage: null, model });
+    if (!ur && !pa) return Response.json({ text: "", confidence: 0, usage: null, model });
     userText =
       contextBlock(body.context, "Recent conversation") +
       (lang === "urdu"
@@ -107,8 +150,10 @@ export default async (req) => {
     system =
       HER[lang] +
       ". Then translate it into natural, simple British English in the first person, as she said it. " +
-      "If part is genuinely unclear, give your best guess and put (unclear) after that part. Output only the English." +
+      "If part is genuinely unclear, give your best guess and put (unclear) after that part. " +
+      CONFIDENCE + " Answer only by calling the caption tool." +
       NOT_INSTRUCTIONS + notesFor(knowledge, "in");
+    tool = TOOLS.caption;
   }
 
   const r = await fetch("https://api.anthropic.com/v1/messages", {
@@ -123,6 +168,9 @@ export default async (req) => {
       max_tokens: 1000,
       // Cached when long enough, so the family notes don't cost full price on every line.
       system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
+      // The answer must come back as the tool's fields, so there is nowhere for reasoning or notes to leak out.
+      tools: [tool],
+      tool_choice: { type: "tool", name: tool.name },
       messages: [{ role: "user", content: userText.slice(0, 6000) }],
     }),
   });
@@ -130,11 +178,19 @@ export default async (req) => {
   const j = await r.json().catch(() => ({}));
   if (!r.ok) return new Response("Translation failed: " + (j.error?.message || r.status), { status: 502 });
 
-  const out = (j.content || []).filter((b) => b.type === "text").map((b) => b.text).join("").trim();
+  const out = (j.content || []).find((b) => b.type === "tool_use")?.input || {};
+  const meta = { lang, usage: j.usage || null, model };
+
   if (body.direction === "to") {
-    // Script (spoken) ### Roman (texting style)
-    const [spoken, roman = ""] = out.split(/\n?\s*#{3,}\s*\n?/);
-    return Response.json({ text: spoken.trim(), roman: roman.trim(), lang, usage: j.usage || null, model });
+    const spoken = clean(out.spoken);
+    if (!spoken) return new Response("Translation came back empty. Try again.", { status: 502 });
+    return Response.json({ text: spoken, roman: clean(out.roman), ...meta });
   }
-  return Response.json({ text: out, lang, usage: j.usage || null, model });
+
+  const english = clean(out.english);
+  const confidence = Math.max(0, Math.min(100, Math.round(Number(out.confidence) || 0)));
+  if (out.junk === true || !english) {
+    return Response.json({ text: body.direction === "live" ? "-" : "", confidence: 0, ...meta });
+  }
+  return Response.json({ text: english, confidence, ...meta });
 };

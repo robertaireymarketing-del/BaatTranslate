@@ -260,6 +260,19 @@
   #liveList .mine-roman { margin: 0; font-size: 18px; font-weight: 700; color: var(--you); }
   @media (prefers-reduced-motion: reduce) { .reply-btn::after { animation: none !important; } }
 
+  /* Listen: how sure each caption is, red (0) to green (100) */
+  #liveList li.scored {
+    border-left: 6px solid hsl(var(--conf-h) 70% 45%);
+    padding-left: 12px; margin-left: -4px;
+    background: linear-gradient(to right, hsl(var(--conf-h) 70% 45% / .10), transparent 70%);
+    border-radius: 4px;
+  }
+  #liveList li.scored + li { border-top-color: var(--line); }
+  #liveList .conf {
+    font-size: 12px; font-weight: 700; padding: 1px 8px; border-radius: 999px; margin-left: 8px; margin-right: auto;
+    color: #fff; background: hsl(var(--conf-h) 65% 38%);
+  }
+
   /* Language picker */
   .lang-pick { margin-bottom: 16px; }
   .lang-pick .lp-label { display: block; font-size: 15px; font-weight: 700; color: var(--muted); margin: 0 4px 6px; }
@@ -1112,10 +1125,16 @@ async function handleRecording() {
     }
     const res = await api("translate", { direction: "from", lang, ur: heard.ur, pa: heard.pa, context: talkContext(), knowledge: knowledgePayload() });
     trackClaude(res);
+    if (!res.text) {
+      setMic("idle");
+      setStatus("Couldn't make that out. Ask her to say it again.");
+      $("#repeatBtn").classList.add("nudge");
+      return;
+    }
     $("#inText").textContent = res.text;
     setCopyRow("#inCopy", [copyBtn("Copy English", () => $("#inText").textContent)]);
     $("#inCard").hidden = false;
-    $("#repeatBtn").classList.toggle("nudge", /\(unclear\)/i.test(res.text));
+    $("#repeatBtn").classList.toggle("nudge", /\(unclear\)/i.test(res.text) || (typeof res.confidence === "number" && res.confidence < 50));
     addHistory({ dir: "in", en: res.text, heard: heard.ur || heard.pa, lang });
     setMic("idle");
     await speak(res.text, "en");
@@ -1258,7 +1277,7 @@ async function pump() {
     const res = await api("translate", { direction: "live", lang: state.listenLang, text: heard, context, knowledge: knowledgePayload() });
     trackClaude(res);
     if (!res.text || res.text.trim() === "-") removeLine(line);
-    else finishLine(line, { en: res.text, orig: heard });
+    else finishLine(line, { en: res.text, orig: heard, confidence: res.confidence });
   } catch {
     finishLine(line, null, "Couldn't translate this bit.");
   }
@@ -1275,7 +1294,9 @@ function finishLine(line, data, err) {
   if (data) {
     line.state = "done"; line.en = data.en; line.orig = data.orig;
     if (data.roman) line.roman = data.roman;
+    if (typeof data.confidence === "number") line.confidence = data.confidence;
     const rec = { ts: line.ts, en: line.en, orig: line.orig };
+    if (typeof line.confidence === "number") rec.confidence = line.confidence;
     if (line.who) { rec.who = line.who; rec.roman = line.roman || ""; }
     if (uid) setDoc(doc(userCol("live"), line.id), rec).catch(() => {});
   } else { line.state = "failed"; line.en = err; }
@@ -1335,6 +1356,16 @@ function renderLive() {
       f.onclick = () => openFix({ dir: "in", source: l.orig, wrong: l.en, line: l });
       acts.append(copyBtn("Copy", () => l.en), f);
       foot.append(acts);
+    }
+    if (l.state === "done" && typeof l.confidence === "number") {
+      // 0 = red, 100 = green
+      li.classList.add("scored");
+      li.style.setProperty("--conf-h", Math.round(l.confidence * 1.2));
+      const pill = document.createElement("span");
+      pill.className = "conf";
+      pill.textContent = l.confidence >= 85 ? "Sure" : l.confidence >= 60 ? "Fairly sure" : l.confidence >= 35 ? "Unsure" : "Guess";
+      pill.title = l.confidence + "% sure";
+      t.after(pill);
     }
     const en = document.createElement("p");
     en.className = "en"; en.textContent = l.en;
@@ -1611,7 +1642,7 @@ $("#fixSave").onclick = async () => {
     $("#fixDialog").close();
     if (f.dir === "in") {
       if (f.item) { f.item.en = right; renderHistory(); updateDoc(doc(userCol("history"), f.item.id), { en: right }).catch(() => {}); }
-      if (f.line) { f.line.en = right; renderLive(); updateDoc(doc(userCol("live"), f.line.id), { en: right }).catch(() => {}); }
+      if (f.line) { f.line.en = right; f.line.confidence = 100; renderLive(); updateDoc(doc(userCol("live"), f.line.id), { en: right, confidence: 100 }).catch(() => {}); }
       setStatus("");
     } else {
       // Re-translate with the fix now included, then play it.
