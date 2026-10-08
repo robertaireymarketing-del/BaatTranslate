@@ -514,6 +514,12 @@
     <option value="male">Male</option>
   </select>
   <p class="note">What you say in Urdu always plays in a male voice.</p>
+  <label for="loudSel">Loudness</label>
+  <select id="loudSel">
+    <option value="extra">Extra loud</option>
+    <option value="normal">Normal</option>
+  </select>
+  <p class="note">Extra loud boosts the voice beyond the phone's normal maximum. Switch to Normal if it ever sounds harsh.</p>
 
   <button class="wide-btn" id="wordsBtn">Family words &amp; names</button>
   <p class="note">Names and Mirpuri words the app should always get right. Shared with everyone using the app.</p>
@@ -615,6 +621,7 @@ const state = {
   listenLang: get("listenLang", "mirpuri"),
   speed: get("speed", "normal"),
   gender: get("gender", "female"),
+  loud: get("loud", "extra"),
   history: [],
 };
 const kn = { words: [], fixes: [] }; // shared family knowledge, kept live from Firestore
@@ -676,6 +683,7 @@ async function startApp(user) {
   renderLangPickers();
   $("#speedSel").value = state.speed;
   $("#voiceSel").value = state.gender;
+  $("#loudSel").value = state.loud;
 
   usage = data.usage && data.usage.month ? { ...blankUsage(), ...data.usage } : blankUsage();
   lastMonth = data.usagePrev || null;
@@ -964,9 +972,44 @@ function toB64(buf) {
 }
 
 /* ---------- Playback (iPhone needs the player unlocked by a tap) ---------- */
-const player = new Audio();
+/* Two players: the "boost" one runs through a compressor + amplifier + limiter so the voice is
+   much louder without crackling; the plain one is the fallback if the boost can't start. */
+const plainPlayer = new Audio();
+const boostPlayer = new Audio();
+let player = plainPlayer; // whichever one is playing now
+let outCtx = null;
+const BOOST = { gain: 2.4 }; // how much louder than normal (with the limiter stopping distortion)
+
+function setupBoost() {
+  if (outCtx) return;
+  try {
+    const C = window.AudioContext || window.webkitAudioContext;
+    outCtx = new C();
+    const src = outCtx.createMediaElementSource(boostPlayer);
+    // 1) even out loud and quiet syllables so the whole sentence is loud
+    const comp = outCtx.createDynamicsCompressor();
+    comp.threshold.value = -32; comp.knee.value = 12; comp.ratio.value = 6; comp.attack.value = 0.003; comp.release.value = 0.25;
+    // 2) turn it up
+    const gain = outCtx.createGain();
+    gain.gain.value = BOOST.gain;
+    // 3) hard ceiling so it never clips into crackle
+    const limit = outCtx.createDynamicsCompressor();
+    limit.threshold.value = -1.5; limit.knee.value = 0; limit.ratio.value = 20; limit.attack.value = 0.001; limit.release.value = 0.08;
+    src.connect(comp); comp.connect(gain); gain.connect(limit); limit.connect(outCtx.destination);
+  } catch { outCtx = null; }
+}
+
+/* iPhone: after the mic has been used, Safari can stay in quiet "phone call" audio mode.
+   Switch to normal media playback before speaking, and back before listening. (iOS 16.4+) */
+function setSession(type) {
+  try { if (navigator.audioSession) navigator.audioSession.type = type; } catch {}
+}
 const SILENT = URL.createObjectURL(new Blob([encodeWav(new Float32Array(1600), 16000)], { type: "audio/wav" }));
-function unlock() { player.src = SILENT; player.play().catch(() => {}); }
+function unlock() {
+  setupBoost();
+  outCtx?.resume().catch(() => {});
+  for (const p of [plainPlayer, boostPlayer]) { p.src = SILENT; p.play().catch(() => {}); }
+}
 
 const audioCache = new Map();
 // Speak, then wait until the voice has actually finished (or 30 s, whichever first).
@@ -991,6 +1034,12 @@ async function speak(text, lang) {
     audioCache.set(key, url);
     trackAzureTts(text.length);
   }
+  // Only switch to media mode when nothing is recording (otherwise the room listener would go deaf).
+  if (!(live.on && !live.paused)) setSession("playback");
+  let useBoost = state.loud !== "normal" && outCtx;
+  if (useBoost && outCtx.state !== "running") { try { await outCtx.resume(); } catch {} }
+  if (useBoost && outCtx.state !== "running") useBoost = false;
+  player = useBoost ? boostPlayer : plainPlayer;
   player.src = url;
   await player.play();
 }
@@ -1146,6 +1195,7 @@ $("#speakEnBtn").onclick = async () => {
   if (rec && rec.state === "recording") return; // her mic is in use
   if (live.on) await stopLive();
   try {
+    setSession("play-and-record");
     enStream = await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch {
     setStatus("The microphone is blocked. Allow it in Settings › Safari › Microphone, then reload.");
@@ -1189,6 +1239,7 @@ $("#micBtn").onclick = async () => {
   if (enRec && enRec.state === "recording") return; // your mic is in use
   if (live.on) await stopLive();
   try {
+    setSession("play-and-record");
     recStream = await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch {
     setStatus("The microphone is blocked. Allow it in Settings › Safari › Microphone, then reload.");
@@ -1524,6 +1575,7 @@ async function requestWakeLock() {
 async function startLive() {
   setStatus("");
   try {
+    setSession("play-and-record");
     live.stream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
     });
@@ -1641,6 +1693,7 @@ function pauseMic() {
 async function resumeMic() {
   if (!live.on) return;
   try {
+    setSession("play-and-record");
     live.stream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
     });
@@ -1874,6 +1927,7 @@ $("#signOutBtn").onclick = async () => {
 };
 $("#speedSel").onchange = (e) => { state.speed = e.target.value; saveSettings(); };
 $("#voiceSel").onchange = (e) => { state.gender = e.target.value; saveSettings(); };
+$("#loudSel").onchange = (e) => { state.loud = e.target.value; put("loud", state.loud); };
 $("#clearBtn").onclick = async () => {
   if (!confirm("Clear everything in Earlier? This also deletes the backup.")) return;
   state.history = []; renderHistory();
