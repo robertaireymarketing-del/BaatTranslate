@@ -1,0 +1,23 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Put the family's Google addresses here (lower case). Same list as ALLOWED_EMAILS in Netlify.
+    function family() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && request.auth.token.email.lower() in [
+          "your.address@gmail.com",
+          "warda.address@gmail.com"
+        ];
+    }
+
+    // Shared by the whole family: names/words and corrections.
+    match /words/{id} { allow read, write: if family(); }
+    match /fixes/{id} { allow read, write: if family(); }
+
+    // Each person's own settings, spending, history and Listen transcripts.
+    match /users/{uid}/{document=**} {
+      allow read, write: if family() && request.auth.uid == uid;
+    }
+  }
+}

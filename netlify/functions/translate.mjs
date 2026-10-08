@@ -1,7 +1,8 @@
+import { requireUser } from "../../lib/auth.mjs";
 // Translation using Claude, tuned for a household with Lahori Urdu speakers and a Mirpuri
 // (Pahari-Pothwari) speaker from Kotli, AJK. Uses the family's word list, past corrections and
 // the recent conversation. Returns token usage so the app can track spend.
-import { loadKnowledge, notesFor } from "../../lib/knowledge.mjs";
+import { cleanKnowledge, notesFor } from "../../lib/knowledge.mjs";
 
 const LISTENER =
   "The listener is a woman from Kotli in Azad Kashmir whose everyday language is Mirpuri (Pahari-Pothwari). She understands simple spoken Urdu but cannot read, and formal or literary Urdu loses her.";
@@ -22,13 +23,11 @@ const contextBlock = (ctx, label) =>
     : "";
 
 export default async (req) => {
-  if (req.method !== "POST") return new Response("Method not allowed", { status: 405 });
-  if (process.env.APP_PASSCODE && req.headers.get("x-passcode") !== process.env.APP_PASSCODE) {
-    return new Response("Wrong passcode", { status: 401 });
-  }
+  const who = await requireUser(req);
+  if (who.error) return who.error;
 
   const body = await req.json();
-  const knowledge = await loadKnowledge();
+  const knowledge = cleanKnowledge(body.knowledge);
   let system, userText;
   let model = process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5";
 

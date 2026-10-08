@@ -1,14 +1,12 @@
+import { requireUser } from "../../lib/auth.mjs";
 // Listen mode: one chunk of room audio (16 kHz WAV, base64) -> Urdu-script transcript via Groq Whisper.
 // Only chunks with speech in them are ever sent. Family names are passed as a vocabulary hint.
-import { loadKnowledge, whisperPrompt } from "../../lib/knowledge.mjs";
 
 export default async (req) => {
-  if (req.method !== "POST") return new Response("Method not allowed", { status: 405 });
-  if (process.env.APP_PASSCODE && req.headers.get("x-passcode") !== process.env.APP_PASSCODE) {
-    return new Response("Wrong passcode", { status: 401 });
-  }
+  const who = await requireUser(req);
+  if (who.error) return who.error;
 
-  const { audio = "" } = await req.json();
+  const { audio = "", hint = "" } = await req.json();
   if (!audio) return new Response("No audio", { status: 400 });
 
   const form = new FormData();
@@ -17,8 +15,8 @@ export default async (req) => {
   form.append("language", "ur"); // one script throughout; Claude untangles Mirpuri/English words
   form.append("response_format", "json");
   form.append("temperature", "0");
-  const hint = whisperPrompt(await loadKnowledge());
-  if (hint) form.append("prompt", hint);
+  // Family names/words as a spelling hint (Whisper only reads the first ~200 tokens).
+  if (hint) form.append("prompt", String(hint).slice(0, 500));
 
   const r = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
     method: "POST",

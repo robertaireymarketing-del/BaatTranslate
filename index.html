@@ -163,6 +163,14 @@
   .words .link-btn { flex: none; }
   .wide-btn { width: 100%; min-height: 48px; margin-top: 16px; border-radius: 12px; border: 1px solid var(--line); background: var(--bg); font-weight: 700; }
 
+  .gate { min-height: 100vh; display: grid; place-items: center; padding: 24px 18px; }
+  .gate-card { width: min(100%, 420px); background: var(--surface); border-radius: 22px; padding: 28px 22px; text-align: center; }
+  .gate-card h1 { font-size: 34px; margin-bottom: 8px; }
+  .gate-card p { color: var(--muted); margin: 0 0 18px; }
+  .gate-card .say svg { width: 22px; height: 22px; }
+  .gate-card .link-btn { margin-top: 14px; }
+  .account { font-size: 15px; color: var(--muted); margin: 20px 0 0; word-break: break-all; }
+
   dialog {
     border: 0; border-radius: 22px; padding: 22px; width: min(92vw, 440px); max-height: 88vh;
     background: var(--surface); color: var(--ink);
@@ -187,7 +195,19 @@
 </style>
 </head>
 <body>
-<main>
+<div class="gate" id="gate">
+  <div class="gate-card">
+    <h1>Baat</h1>
+    <p id="gateMsg">Loading…</p>
+    <button class="say" id="signInBtn" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M21.6 12.2c0-.7-.1-1.4-.2-2H12v3.8h5.4a4.6 4.6 0 0 1-2 3v2.5h3.2c1.9-1.7 3-4.3 3-7.3z"/><path fill="currentColor" opacity=".85" d="M12 22c2.7 0 5-.9 6.6-2.4l-3.2-2.5c-.9.6-2 1-3.4 1-2.6 0-4.8-1.8-5.6-4.1H3.1v2.6A10 10 0 0 0 12 22z"/><path fill="currentColor" opacity=".7" d="M6.4 14c-.2-.6-.3-1.3-.3-2s.1-1.4.3-2V7.4H3.1a10 10 0 0 0 0 9.2L6.4 14z"/><path fill="currentColor" opacity=".55" d="M12 6c1.5 0 2.8.5 3.8 1.5l2.9-2.9A10 10 0 0 0 3.1 7.4L6.4 10C7.2 7.7 9.4 6 12 6z"/></svg>
+      Sign in with Google
+    </button>
+    <button class="link-btn" id="gateOut" hidden>Use a different account</button>
+  </div>
+</div>
+
+<main id="app" hidden>
   <header>
     <h1>Baat</h1>
     <button class="icon-btn" id="settingsBtn" aria-label="Settings and spending">
@@ -295,9 +315,10 @@
   <h3>Spending this month</h3>
   <ul class="spend" id="spendList"></ul>
   <p class="note" id="spendNote"></p>
+  <p class="account" id="accountLine"></p>
 
   <div class="row">
-    <button id="passBtn">Change passcode</button>
+    <button id="signOutBtn">Sign out</button>
     <button class="primary" id="doneBtn">Done</button>
   </div>
 </dialog>
@@ -330,7 +351,17 @@
   <div class="row"><button class="primary" id="wordsDone">Done</button></div>
 </dialog>
 
-<script>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import {
+  getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, onAuthStateChanged, signOut,
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import {
+  initializeFirestore, persistentLocalCache, collection, doc, setDoc, updateDoc, deleteDoc, getDoc, getDocs,
+  onSnapshot, query, orderBy, limit, writeBatch,
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { firebaseConfig } from "./firebase-config.js";
+
 /* =====================================================================
    PRICES — check these against your real bills and adjust if needed.
    All in US dollars (how the providers bill); shown in pounds.
@@ -352,28 +383,168 @@ const $ = (s) => document.querySelector(s);
 function get(k, d) { try { return localStorage.getItem(k) ?? d; } catch { return d; } }
 function put(k, v) { try { localStorage.setItem(k, v); } catch {} }
 function getJSON(k, d) { try { return JSON.parse(get(k, "")) ?? d; } catch { return d; } }
+const newId = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
+const plain = (o) => JSON.parse(JSON.stringify(o)); // Firestore rejects undefined values
 
+/* ================= FIREBASE ================= */
+if (String(firebaseConfig.apiKey).includes("PASTE")) {
+  document.querySelector("#gateMsg").textContent = "Setup needed: paste your Firebase config into firebase-config.js, then redeploy.";
+  throw new Error("firebase-config.js not filled in");
+}
+const fbApp = initializeApp(firebaseConfig);
+const auth = getAuth(fbApp);
+const db = initializeFirestore(fbApp, { localCache: persistentLocalCache() }); // works offline, syncs when back online
+let uid = null;
+const userRef = () => doc(db, "users", uid);
+const userCol = (name) => collection(db, "users", uid, name);
+
+/* ================= STATE ================= */
 const state = {
   style: get("style", "simple"),
   speed: get("speed", "normal"),
   gender: get("gender", "female"),
-  history: getJSON("history", []),
+  history: [],
 };
+const kn = { words: [], fixes: [] }; // shared family knowledge, kept live from Firestore
+let unsubs = [];
 
-/* ---------- Spend tracking (stored on this phone, resets each calendar month) ---------- */
+/* ---------- Sign-in screen ---------- */
+function gate(msg, { showSignIn = false, showOther = false } = {}) {
+  $("#app").hidden = true;
+  $("#gate").hidden = false;
+  $("#gateMsg").textContent = msg;
+  $("#signInBtn").hidden = !showSignIn;
+  $("#gateOut").hidden = !showOther;
+}
+
+$("#signInBtn").onclick = async () => {
+  const provider = new GoogleAuthProvider();
+  provider.setCustomParameters({ prompt: "select_account" });
+  try {
+    await signInWithPopup(auth, provider);
+  } catch (e) {
+    if (e.code === "auth/popup-blocked" || e.code === "auth/operation-not-supported-in-this-environment") {
+      await signInWithRedirect(auth, provider);
+    } else if (e.code !== "auth/popup-closed-by-user" && e.code !== "auth/cancelled-popup-request") {
+      gate("Sign-in didn't work: " + (e.message || e.code), { showSignIn: true });
+    }
+  }
+};
+$("#gateOut").onclick = () => signOut(auth);
+getRedirectResult(auth).catch((e) => gate("Sign-in didn't work: " + (e.message || e.code), { showSignIn: true }));
+
+onAuthStateChanged(auth, async (user) => {
+  unsubs.forEach((u) => u()); unsubs = [];
+  if (live.on) await stopLive();
+  if (!user) { uid = null; gate("Sign in with your Google account to use Baat.", { showSignIn: true }); return; }
+  uid = user.uid;
+  gate("Loading…");
+  try {
+    await startApp(user);
+  } catch (e) {
+    if (e.code === "permission-denied") {
+      gate(`${user.email} isn't on the family list for Baat. Ask Robert to add it.`, { showOther: true });
+    } else {
+      gate("Couldn't load your data: " + (e.message || e.code), { showOther: true });
+    }
+  }
+});
+
+async function startApp(user) {
+  // Reading your own record also confirms you're on the family list (the security rules decide).
+  const snap = await getDoc(userRef());
+  if (!snap.exists()) await migrateFromThisPhone();
+  const data = (await getDoc(userRef())).data() || {};
+
+  const st = data.settings || {};
+  state.style = st.style || state.style;
+  state.speed = st.speed || state.speed;
+  state.gender = st.gender || state.gender;
+  $("#styleSel").value = state.style;
+  $("#speedSel").value = state.speed;
+  $("#voiceSel").value = state.gender;
+
+  usage = data.usage && data.usage.month ? { ...blankUsage(), ...data.usage } : blankUsage();
+  lastMonth = data.usagePrev || null;
+  rollMonth();
+  renderSpend();
+
+  // Listen transcript (this account)
+  const lines = await getDocs(query(userCol("live"), orderBy("ts", "desc"), limit(300)));
+  live.lines = lines.docs.map((d) => ({ id: d.id, state: "done", ...d.data() })).reverse();
+  renderLive();
+
+  // Live-synced: your Talk history, and the family's shared words and fixes.
+  unsubs.push(onSnapshot(query(userCol("history"), orderBy("ts", "desc"), limit(50)), (s) => {
+    state.history = s.docs.map((d) => ({ id: d.id, ...d.data() }));
+    renderHistory();
+  }));
+  unsubs.push(onSnapshot(query(collection(db, "words"), orderBy("ts")), (s) => {
+    kn.words = s.docs.map((d) => ({ id: d.id, ...d.data() }));
+    if ($("#wordsDialog").open) renderWords();
+  }));
+  unsubs.push(onSnapshot(query(collection(db, "fixes"), orderBy("ts", "desc"), limit(200)), (s) => {
+    kn.fixes = s.docs.map((d) => ({ id: d.id, ...d.data() })).reverse();
+  }));
+
+  $("#accountLine").textContent = "Signed in as " + user.email + ". Everything is backed up to your Firebase.";
+  $("#gate").hidden = true;
+  $("#app").hidden = false;
+  showTab(get("tab", "talk"));
+}
+
+// First sign-in on a phone that used the old version: copy what's stored on it into Firestore.
+async function migrateFromThisPhone() {
+  const batch = writeBatch(db);
+  const oldUsage = getJSON("usage", null);
+  batch.set(userRef(), plain({
+    created: Date.now(),
+    settings: { style: state.style, speed: state.speed, gender: state.gender },
+    usage: oldUsage && oldUsage.month ? oldUsage : blankUsage(),
+    usagePrev: getJSON("usagePrev", null),
+  }));
+  getJSON("history", []).slice(0, 50).forEach((h) => batch.set(doc(userCol("history"), newId()), plain({ ...h, ts: h.ts || Date.now() })));
+  getJSON("liveLines", []).slice(-300).forEach((l) => {
+    if (l.state === "done") batch.set(doc(userCol("live"), newId()), plain({ ts: l.ts || Date.now(), en: l.en, orig: l.orig || "" }));
+  });
+  await batch.commit();
+}
+
+function saveSettings() {
+  put("style", state.style); put("speed", state.speed); put("gender", state.gender);
+  if (uid) setDoc(userRef(), { settings: { style: state.style, speed: state.speed, gender: state.gender } }, { merge: true }).catch(() => {});
+}
+
+/* What the server needs to translate with the family's knowledge. */
+function knowledgePayload() {
+  return {
+    words: kn.words.slice(-200).map((w) => ({ term: w.term, meaning: w.meaning || "" })),
+    fixes: kn.fixes.slice(-120).map((f) => ({ dir: f.dir, source: f.source || "", right: f.right, note: f.note || "" })),
+  };
+}
+const whisperHint = () => kn.words.map((w) => w.term).join("، ").slice(0, 500);
+
+/* ---------- Spend tracking (per account, synced to Firestore, resets each calendar month) ---------- */
 function monthKey() { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"); }
 function blankUsage() { return { month: monthKey(), claudeUsd: 0, groqSec: 0, azSttSec: 0, azTtsChars: 0, listenSec: 0 }; }
-let usage = getJSON("usage", null) || blankUsage();
-let lastMonth = getJSON("usagePrev", null);
+let usage = blankUsage();
+let lastMonth = null;
 
 function rollMonth() {
   if (usage.month !== monthKey()) {
     lastMonth = { month: usage.month, gbp: costs(usage).total };
-    put("usagePrev", JSON.stringify(lastMonth));
     usage = blankUsage();
+    pushUsage(true);
   }
 }
-function saveUsage() { rollMonth(); put("usage", JSON.stringify(usage)); renderSpend(); }
+let usageTimer = null;
+function pushUsage(now) {
+  if (!uid) return;
+  clearTimeout(usageTimer);
+  const write = () => setDoc(userRef(), plain({ usage, usagePrev: lastMonth }), { merge: true }).catch(() => {});
+  if (now) write(); else usageTimer = setTimeout(write, 5000);
+}
+function saveUsage() { rollMonth(); pushUsage(false); renderSpend(); }
 
 function costs(u) {
   const g = PRICES.usdToGbp;
@@ -414,7 +585,7 @@ function renderSpend() {
     ["Translating", "Claude", c.claude],
     ["Listen mode hearing", dur(usage.groqSec) + " billed by Groq", c.groq],
     ["Talk mode hearing", dur(usage.azSttSec) + " of " + PRICES.azureSttFreeHours + "h free (Azure)", c.azStt],
-    ["Voice", usage.azTtsChars.toLocaleString() + " of 500,000 free characters", c.azTts],
+    ["Voice", Math.round(usage.azTtsChars).toLocaleString() + " of 500,000 free characters", c.azTts],
   ];
   $("#spendList").innerHTML =
     rows.map(([a, b, v]) => `<li><span>${a}<small>${b}</small></span><span class="amt">${gbp(v)}</span></li>`).join("") +
@@ -422,19 +593,19 @@ function renderSpend() {
   $("#spendNote").textContent =
     `Time spent listening this month: ${dur(usage.listenSec)}. ` +
     (lastMonth ? `Last month: ${gbp(lastMonth.gbp)}. ` : "") +
-    "These are estimates from what this phone has used. If you're on Groq's free plan, the Listen line is really £0.";
+    "Estimates for this Google account, on any phone it's signed in on. If you're on Groq's free plan, the Listen line is really £0.";
 }
 
-/* ---------- Passcode & server calls ---------- */
-function askPass() { const p = prompt("Enter the app passcode"); if (p !== null) put("pass", p.trim()); }
-
-async function api(name, body, asBlob) {
+/* ---------- Server calls (signed with your Google sign-in) ---------- */
+async function api(name, body, asBlob, retried) {
+  if (!auth.currentUser) throw new Error("Please sign in again.");
+  const token = await auth.currentUser.getIdToken(!!retried);
   const r = await fetch("/.netlify/functions/" + name, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "x-passcode": get("pass", "") },
+    headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
     body: JSON.stringify(body),
   });
-  if (r.status === 401) { askPass(); throw new Error("That passcode didn't work. Enter it again, then retry."); }
+  if (r.status === 401 && !retried) return api(name, body, asBlob, true);
   if (!r.ok) { const e = new Error((await r.text()) || "Something went wrong (" + r.status + ")."); e.status = r.status; throw e; }
   return asBlob ? r.blob() : r.json();
 }
@@ -513,11 +684,13 @@ function setMic(mode) {
   b.disabled = mode === "busy";
 }
 
-function addHistory(item) {
-  state.history.unshift({ ...item, ts: Date.now() });
-  state.history = state.history.slice(0, 50);
-  put("history", JSON.stringify(state.history));
+async function addHistory(item) {
+  const h = plain({ ...item, ts: Date.now() });
+  const id = newId();
+  state.history.unshift({ id, ...h }); // shows instantly; Firestore confirms a moment later
   renderHistory();
+  setDoc(doc(userCol("history"), id), h).catch((e) => setStatus("Couldn't back that up: " + e.message));
+  return { id, ...h };
 }
 
 const PLAY_SVG = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15l13-7.5z"/></svg>';
@@ -573,7 +746,7 @@ async function sayIt() {
   const btn = $("#sayBtn");
   btn.disabled = true;
   try {
-    const res = await api("translate", { text: en, direction: "to", style: state.style, context: talkContext() });
+    const res = await api("translate", { text: en, direction: "to", style: state.style, context: talkContext(), knowledge: knowledgePayload() });
     trackClaude(res);
     $("#outText").textContent = res.text;
     $("#outCard").hidden = false;
@@ -631,7 +804,7 @@ async function handleRecording() {
       setStatus("Nothing was picked up. Tap the mic and try again, holding the phone a little closer.");
       return;
     }
-    const res = await api("translate", { direction: "from", ur: heard.ur, pa: heard.pa, context: talkContext() });
+    const res = await api("translate", { direction: "from", ur: heard.ur, pa: heard.pa, context: talkContext(), knowledge: knowledgePayload() });
     trackClaude(res);
     $("#inText").textContent = res.text;
     $("#inCard").hidden = false;
@@ -644,6 +817,7 @@ async function handleRecording() {
     setStatus(e.message);
   }
 }
+
 const SAY_AGAIN = "ذرا پھر سے بولو، سمجھ نہیں آئی";
 $("#repeatBtn").onclick = async () => {
   unlock(); setStatus("");
@@ -677,8 +851,8 @@ const live = {
   on: false, ctx: null, stream: null, node: null, source: null, wakeLock: null,
   startedAt: 0, tick: null, lastTickAt: 0,
   noise: 0.004, inSpeech: false, parts: [], partLen: 0, speechLen: 0, silenceLen: 0, pre: [], preLen: 0,
-  queue: [], sending: false, lastSendAt: 0, seq: 0,
-  lines: getJSON("liveLines", []),
+  queue: [], sending: false, lastSendAt: 0,
+  lines: [],
 };
 
 function downsample(input, inRate) {
@@ -761,7 +935,7 @@ async function pump() {
 
   let heard = "";
   try {
-    const res = await api("live-listen", { audio: toB64(encodeWav(samples, RATE)) });
+    const res = await api("live-listen", { audio: toB64(encodeWav(samples, RATE)), hint: whisperHint() });
     trackGroq(samples.length / RATE);
     heard = res.text;
   } catch (e) {
@@ -773,7 +947,7 @@ async function pump() {
 
   try {
     const context = live.lines.filter((l) => l.state === "done").slice(-4).map((l) => l.en);
-    const res = await api("translate", { direction: "live", text: heard, context });
+    const res = await api("translate", { direction: "live", text: heard, context, knowledge: knowledgePayload() });
     trackClaude(res);
     if (!res.text || res.text.trim() === "-") removeLine(line);
     else finishLine(line, { en: res.text, orig: heard });
@@ -782,20 +956,21 @@ async function pump() {
   }
 }
 
-/* Transcript */
+/* Transcript — finished lines are backed up to Firestore */
 function addLiveLine() {
-  const line = { id: ++live.seq + "-" + Date.now(), ts: Date.now(), state: "pending", en: "…", orig: "" };
+  const line = { id: newId(), ts: Date.now(), state: "pending", en: "…", orig: "" };
   live.lines.push(line);
   renderLive();
   return line;
 }
 function finishLine(line, data, err) {
-  if (data) { line.state = "done"; line.en = data.en; line.orig = data.orig; }
-  else { line.state = "failed"; line.en = err; }
-  saveLive(); renderLive();
+  if (data) {
+    line.state = "done"; line.en = data.en; line.orig = data.orig;
+    if (uid) setDoc(doc(userCol("live"), line.id), { ts: line.ts, en: line.en, orig: line.orig }).catch(() => {});
+  } else { line.state = "failed"; line.en = err; }
+  renderLive();
 }
-function removeLine(line) { live.lines = live.lines.filter((l) => l !== line); saveLive(); renderLive(); }
-function saveLive() { put("liveLines", JSON.stringify(live.lines.filter((l) => l.state === "done").slice(-300))); }
+function removeLine(line) { live.lines = live.lines.filter((l) => l !== line); renderLive(); }
 
 function renderLive() {
   const list = $("#liveList");
@@ -882,7 +1057,7 @@ async function stopLive() {
   if (live.inSpeech) endChunk(); // send whatever was mid-sentence
   live.on = false;
   clearInterval(live.tick);
-  tickLive(); saveUsage();
+  tickLive(); saveUsage(); pushUsage(true);
   try { live.node.disconnect(); live.source.disconnect(); } catch {}
   live.stream.getTracks().forEach((t) => t.stop());
   try { await live.ctx.close(); } catch {}
@@ -898,6 +1073,7 @@ async function stopLive() {
 $("#liveBtn").onclick = () => (live.on ? stopLive() : startLive());
 
 document.addEventListener("visibilitychange", async () => {
+  if (document.visibilityState === "hidden") pushUsage(true);
   if (document.visibilityState === "visible" && live.on) {
     try { await live.ctx.resume(); } catch {}
     if (!live.wakeLock || live.wakeLock.released) requestWakeLock();
@@ -906,22 +1082,22 @@ document.addEventListener("visibilitychange", async () => {
 });
 
 $("#showOrig").onchange = (e) => { $("#transcript").classList.toggle("hide-orig", !e.target.checked); put("showOrig", e.target.checked ? "1" : ""); };
-$("#liveClear").onclick = () => {
-  if (confirm("Clear the whole transcript?")) { live.lines = []; saveLive(); renderLive(); }
+
+async function deleteAll(col) {
+  const snap = await getDocs(col);
+  for (let i = 0; i < snap.docs.length; i += 400) {
+    const b = writeBatch(db);
+    snap.docs.slice(i, i + 400).forEach((d) => b.delete(d.ref));
+    await b.commit();
+  }
+}
+$("#liveClear").onclick = async () => {
+  if (!confirm("Clear the whole transcript? This also deletes the backup.")) return;
+  live.lines = []; renderLive();
+  try { await deleteAll(userCol("live")); } catch (e) { setStatus(e.message); }
 };
 
-/* ---------- Settings & history ---------- */
-$("#settingsBtn").onclick = () => { rollMonth(); renderSpend(); $("#settings").showModal(); };
-$("#doneBtn").onclick = () => $("#settings").close();
-$("#passBtn").onclick = askPass;
-$("#styleSel").onchange = (e) => { state.style = e.target.value; put("style", state.style); };
-$("#speedSel").onchange = (e) => { state.speed = e.target.value; put("speed", state.speed); };
-$("#voiceSel").onchange = (e) => { state.gender = e.target.value; put("gender", state.gender); };
-$("#clearBtn").onclick = () => {
-  if (confirm("Clear everything in Earlier?")) { state.history = []; put("history", "[]"); renderHistory(); }
-};
-
-/* ---------- Corrections ---------- */
+/* ---------- Corrections (shared with the family) ---------- */
 let fixing = null;
 function openFix(f) {
   fixing = f;
@@ -954,19 +1130,25 @@ $("#fixSave").onclick = async () => {
   const btn = $("#fixSave");
   btn.disabled = true;
   try {
-    await api("knowledge", { action: "addFix", dir: f.dir, source: f.source, wrong: f.wrong, right, note: $("#fixNote").value });
+    const fix = plain({
+      dir: f.dir, source: f.source || "", wrong: f.wrong || "", right,
+      note: $("#fixNote").value.trim(), by: auth.currentUser?.email || "", ts: Date.now(),
+    });
+    const id = newId();
+    kn.fixes.push({ id, ...fix }); // use it straight away, even before Firestore confirms
+    setDoc(doc(db, "fixes", id), fix).catch((e) => setStatus("Couldn't save the fix: " + e.message));
     $("#fixDialog").close();
     if (f.dir === "in") {
-      if (f.item) { f.item.en = right; put("history", JSON.stringify(state.history)); renderHistory(); }
-      if (f.line) { f.line.en = right; saveLive(); renderLive(); }
+      if (f.item) { f.item.en = right; renderHistory(); updateDoc(doc(userCol("history"), f.item.id), { en: right }).catch(() => {}); }
+      if (f.line) { f.line.en = right; renderLive(); updateDoc(doc(userCol("live"), f.line.id), { en: right }).catch(() => {}); }
       setStatus("");
     } else {
-      // Re-translate with the fix now on file, then play it.
-      const res = await api("translate", { text: f.source, direction: "to", style: state.style, context: talkContext() });
+      // Re-translate with the fix now included, then play it.
+      const res = await api("translate", { text: f.source, direction: "to", style: state.style, context: talkContext(), knowledge: knowledgePayload() });
       trackClaude(res);
       f.item.other = res.text;
-      put("history", JSON.stringify(state.history));
       renderHistory();
+      updateDoc(doc(userCol("history"), f.item.id), { other: res.text }).catch(() => {});
       await speak(res.text, "ur");
     }
   } catch (e) {
@@ -976,52 +1158,59 @@ $("#fixSave").onclick = async () => {
   }
 };
 
-/* ---------- Family words ---------- */
-function renderWords(k) {
+/* ---------- Family words (shared) ---------- */
+function renderWords() {
   const list = $("#wordList");
   list.innerHTML = "";
-  $("#wordEmpty").hidden = k.words.length > 0;
-  k.words.slice().reverse().forEach((w) => {
+  $("#wordEmpty").hidden = kn.words.length > 0;
+  kn.words.slice().reverse().forEach((w) => {
     const li = document.createElement("li");
     const span = document.createElement("span");
     span.textContent = w.term;
     if (w.meaning) { const sm = document.createElement("small"); sm.textContent = w.meaning; span.append(sm); }
     const del = document.createElement("button");
     del.className = "link-btn"; del.textContent = "Remove";
-    del.onclick = async () => { try { renderWords(await api("knowledge", { action: "deleteWord", id: w.id })); } catch (e) { alert(e.message); } };
+    del.onclick = () => deleteDoc(doc(db, "words", w.id)).catch((e) => alert(e.message));
     li.append(span, del);
     list.append(li);
   });
 }
-$("#wordsBtn").onclick = async () => {
-  $("#settings").close();
-  $("#wordsDialog").showModal();
-  $("#wordList").innerHTML = "";
-  $("#wordEmpty").textContent = "Loading…"; $("#wordEmpty").hidden = false;
-  try { renderWords(await api("knowledge", { action: "get" })); $("#wordEmpty").textContent = "No words yet."; }
-  catch (e) { $("#wordEmpty").textContent = e.message; }
-};
+$("#wordsBtn").onclick = () => { $("#settings").close(); renderWords(); $("#wordsDialog").showModal(); };
 $("#wordAdd").onclick = async () => {
-  const term = $("#wordTerm").value.trim();
+  const term = $("#wordTerm").value.trim().slice(0, 80);
   if (!term) { $("#wordTerm").focus(); return; }
+  const meaning = $("#wordMeaning").value.trim().slice(0, 200);
+  const dupes = kn.words.filter((w) => w.term.toLowerCase() === term.toLowerCase());
   try {
-    renderWords(await api("knowledge", { action: "addWord", term, meaning: $("#wordMeaning").value }));
+    const b = writeBatch(db);
+    dupes.forEach((w) => b.delete(doc(db, "words", w.id)));
+    b.set(doc(db, "words", newId()), { term, meaning, by: auth.currentUser?.email || "", ts: Date.now() });
+    b.commit().catch((e) => alert(e.message));
     $("#wordTerm").value = ""; $("#wordMeaning").value = ""; $("#wordTerm").focus();
   } catch (e) { alert(e.message); }
 };
 $("#wordsDone").onclick = () => $("#wordsDialog").close();
 
+/* ---------- Settings & history ---------- */
+$("#settingsBtn").onclick = () => { rollMonth(); renderSpend(); $("#settings").showModal(); };
+$("#doneBtn").onclick = () => $("#settings").close();
+$("#signOutBtn").onclick = async () => {
+  if (!confirm("Sign out of Baat on this phone?")) return;
+  pushUsage(true);
+  $("#settings").close();
+  await signOut(auth);
+};
+$("#styleSel").onchange = (e) => { state.style = e.target.value; saveSettings(); };
+$("#speedSel").onchange = (e) => { state.speed = e.target.value; saveSettings(); };
+$("#voiceSel").onchange = (e) => { state.gender = e.target.value; saveSettings(); };
+$("#clearBtn").onclick = async () => {
+  if (!confirm("Clear everything in Earlier? This also deletes the backup.")) return;
+  state.history = []; renderHistory();
+  try { await deleteAll(userCol("history")); } catch (e) { setStatus(e.message); }
+};
+
 /* ---------- Start up ---------- */
-$("#styleSel").value = state.style;
-$("#speedSel").value = state.speed;
-$("#voiceSel").value = state.gender;
 if (get("showOrig", "")) { $("#showOrig").checked = true; $("#transcript").classList.remove("hide-orig"); }
-rollMonth();
-renderSpend();
-renderHistory();
-renderLive();
-showTab(get("tab", "talk"));
-if (!get("pass", "")) askPass();
 </script>
 </body>
 </html>

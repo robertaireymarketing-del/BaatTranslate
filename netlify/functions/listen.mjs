@@ -1,3 +1,4 @@
+import { requireUser } from "../../lib/auth.mjs";
 // Speech -> text. There is no Mirpuri recogniser, so the audio goes through
 // Urdu and Punjabi recognisers in parallel and both transcripts are returned.
 const recognise = async (audio, locale) => {
@@ -19,10 +20,8 @@ const recognise = async (audio, locale) => {
 };
 
 export default async (req) => {
-  if (req.method !== "POST") return new Response("Method not allowed", { status: 405 });
-  if (process.env.APP_PASSCODE && req.headers.get("x-passcode") !== process.env.APP_PASSCODE) {
-    return new Response("Wrong passcode", { status: 401 });
-  }
+  const who = await requireUser(req);
+  if (who.error) return who.error;
 
   const { audio = "" } = await req.json();
   if (!audio) return new Response("No audio", { status: 400 });

@@ -1,3 +1,4 @@
+import { requireUser } from "../../lib/auth.mjs";
 // Text -> natural speech using Azure neural voices (Pakistani Urdu, British English). Returns an MP3.
 const VOICES = {
   ur: { locale: "ur-PK", female: "ur-PK-UzmaNeural", male: "ur-PK-AsadNeural" },
@@ -9,10 +10,8 @@ const esc = (s) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
 
 export default async (req) => {
-  if (req.method !== "POST") return new Response("Method not allowed", { status: 405 });
-  if (process.env.APP_PASSCODE && req.headers.get("x-passcode") !== process.env.APP_PASSCODE) {
-    return new Response("Wrong passcode", { status: 401 });
-  }
+  const who = await requireUser(req);
+  if (who.error) return who.error;
 
   const { text = "", lang = "ur", gender = "female", speed = "normal" } = await req.json();
   const v = VOICES[lang];
