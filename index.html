@@ -228,6 +228,25 @@
   .row button { flex: 1; min-height: 48px; border-radius: 12px; border: 1px solid var(--line); background: var(--bg); }
   .row button.primary { background: var(--you); color: var(--on-accent); border: 0; font-weight: 700; }
 
+  /* Language picker */
+  .lang-pick { margin-bottom: 16px; }
+  .lang-pick .lp-label { display: block; font-size: 15px; font-weight: 700; color: var(--muted); margin: 0 4px 6px; }
+  .lang-seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; background: var(--surface); border-radius: 14px; padding: 4px; }
+  .lang-seg button { border: 0; background: none; border-radius: 10px; min-height: 44px; font-weight: 700; font-size: 16px; color: var(--muted); padding: 0 4px; }
+  .lang-seg button[aria-checked="true"] { background: var(--you); color: var(--on-accent); }
+  #listenView .lang-seg button[aria-checked="true"] { background: var(--her); }
+  .lang-tag { font-size: 12px; border: 1px solid var(--line); border-radius: 999px; padding: 0 7px; margin-left: 4px; }
+
+  /* Copy buttons */
+  .copy-btn {
+    border: 1px solid var(--line); background: var(--bg); border-radius: 999px; font-size: 14px; padding: 4px 12px;
+    color: var(--muted); display: inline-flex; align-items: center; gap: 5px; min-height: 32px; font-weight: 400;
+  }
+  .copy-btn svg { width: 15px; height: 15px; }
+  .copy-btn.done { color: var(--you); border-color: var(--you); }
+  .copy-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+  .heard .copy-row { margin-top: 10px; }
+
   @media (prefers-reduced-motion: reduce) { .mic::after, .dots span { animation: none !important; } .meter i { transition: none; } }
 </style>
 </head>
@@ -271,6 +290,14 @@
 
   <!-- ===== TALK ===== -->
   <div id="talkView" role="tabpanel">
+    <div class="lang-pick">
+      <span class="lp-label" id="talkLangLabel">Talking in</span>
+      <div class="lang-seg" role="radiogroup" aria-labelledby="talkLangLabel" data-for="talk">
+        <button role="radio" data-lang="urdu">Urdu</button>
+        <button role="radio" data-lang="punjabi">Punjabi</button>
+        <button role="radio" data-lang="mirpuri">Mirpuri mix</button>
+      </div>
+    </div>
     <section class="side" aria-labelledby="youHead">
       <h2 id="youHead">You, in English</h2>
       <textarea id="enInput" placeholder="Type what you want to say, or tap the keyboard mic to speak it" enterkeyhint="send"></textarea>
@@ -290,6 +317,7 @@
         <div class="out-text">
           <p class="urdu" id="outText" lang="ur"></p>
           <p class="roman" id="outRoman" hidden></p>
+          <div class="copy-row" id="outCopy"></div>
         </div>
         <button class="replay you-c" id="outReplay" aria-label="Play again">
           <svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15l13-7.5z"/></svg>
@@ -304,7 +332,10 @@
         <span class="dots" aria-hidden="true"><span></span><span></span><span></span></span>
       </button>
       <div class="heard" id="inCard" hidden>
-        <p id="inText"></p>
+        <div class="out-text">
+          <p id="inText" style="font-size:22px;line-height:1.4;margin:0"></p>
+          <div class="copy-row" id="inCopy"></div>
+        </div>
         <button class="replay her-c" id="inReplay" aria-label="Play again">
           <svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15l13-7.5z"/></svg>
         </button>
@@ -324,6 +355,14 @@
 
   <!-- ===== LISTEN ===== -->
   <div id="listenView" role="tabpanel" hidden>
+    <div class="lang-pick">
+      <span class="lp-label" id="listenLangLabel">What's being spoken</span>
+      <div class="lang-seg" role="radiogroup" aria-labelledby="listenLangLabel" data-for="listen">
+        <button role="radio" data-lang="urdu">Urdu</button>
+        <button role="radio" data-lang="punjabi">Punjabi</button>
+        <button role="radio" data-lang="mirpuri">Mirpuri mix</button>
+      </div>
+    </div>
     <section class="side">
       <button class="live-btn" id="liveBtn" data-on="false">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v4"/></svg>
@@ -343,19 +382,14 @@
       </h2>
       <ol id="liveList"></ol>
       <p class="empty" id="liveEmpty">Tap Start listening and the English will appear here as people talk.</p>
-      <div class="row"><button id="liveClear">Clear transcript</button></div>
+      <div class="row"><button id="liveCopyAll">Copy all</button><button id="liveClear">Clear transcript</button></div>
     </section>
   </div>
 </main>
 
 <dialog id="settings">
   <h2>Settings</h2>
-  <label for="styleSel">How to speak to her</label>
-  <select id="styleSel">
-    <option value="simple">Simple Urdu</option>
-    <option value="mirpuri">Mirpuri-style</option>
-  </select>
-  <p class="note">Mirpuri-style writes her dialect for the Urdu voice to read. Try both and keep whichever she follows best.</p>
+  <p class="note">Pick the language at the top of Talk and Listen. Punjabi and Mirpuri are written in Urdu letters and read out by the Urdu voice, so it sounds like how she speaks rather than Indian Punjabi.</p>
   <label for="speedSel">Speed</label>
   <select id="speedSel">
     <option value="normal">Normal</option>
@@ -462,7 +496,9 @@ const userCol = (name) => collection(db, "users", uid, name);
 
 /* ================= STATE ================= */
 const state = {
-  style: get("style", "simple"),
+  // Language for each tab: "urdu" | "punjabi" | "mirpuri". Older phones stored style simple/mirpuri.
+  talkLang: get("talkLang", get("style", "") === "simple" ? "urdu" : "mirpuri"),
+  listenLang: get("listenLang", "mirpuri"),
   speed: get("speed", "normal"),
   gender: get("gender", "female"),
   history: [],
@@ -519,10 +555,11 @@ async function startApp(user) {
   const data = (await getDoc(userRef())).data() || {};
 
   const st = data.settings || {};
-  state.style = st.style || state.style;
+  state.talkLang = LANGS[st.talkLang] ? st.talkLang : st.style ? (st.style === "simple" ? "urdu" : "mirpuri") : state.talkLang;
+  state.listenLang = LANGS[st.listenLang] ? st.listenLang : state.listenLang;
   state.speed = st.speed || state.speed;
   state.gender = st.gender || state.gender;
-  $("#styleSel").value = state.style;
+  renderLangPickers();
   $("#speedSel").value = state.speed;
   $("#voiceSel").value = state.gender;
 
@@ -561,7 +598,7 @@ async function migrateFromThisPhone() {
   const oldUsage = getJSON("usage", null);
   batch.set(userRef(), plain({
     created: Date.now(),
-    settings: { style: state.style, speed: state.speed, gender: state.gender },
+    settings: { talkLang: state.talkLang, listenLang: state.listenLang, speed: state.speed, gender: state.gender },
     usage: oldUsage && oldUsage.month ? oldUsage : blankUsage(),
     usagePrev: getJSON("usagePrev", null),
   }));
@@ -573,8 +610,83 @@ async function migrateFromThisPhone() {
 }
 
 function saveSettings() {
-  put("style", state.style); put("speed", state.speed); put("gender", state.gender);
-  if (uid) setDoc(userRef(), { settings: { style: state.style, speed: state.speed, gender: state.gender } }, { merge: true }).catch(() => {});
+  put("talkLang", state.talkLang); put("listenLang", state.listenLang); put("speed", state.speed); put("gender", state.gender);
+  const settings = { talkLang: state.talkLang, listenLang: state.listenLang, speed: state.speed, gender: state.gender };
+  if (uid) setDoc(userRef(), { settings }, { merge: true }).catch(() => {});
+}
+
+/* ---------- Language pickers (one on Talk, one on Listen) ---------- */
+const LANGS = { urdu: "Urdu", punjabi: "Punjabi", mirpuri: "Mirpuri mix" };
+// "Say that again" in each language, for the button on her side.
+const SAY_AGAIN = {
+  urdu: "ذرا پھر سے بولو، سمجھ نہیں آئی",
+  punjabi: "ذرا فیر توں بولو، سمجھ نئیں آئی",
+  mirpuri: "ذرا فِر بولو، مِکی سمجھ نئیں آئی",
+};
+
+function renderLangPickers() {
+  document.querySelectorAll(".lang-seg").forEach((seg) => {
+    const cur = seg.dataset.for === "talk" ? state.talkLang : state.listenLang;
+    seg.querySelectorAll("button").forEach((b) => {
+      const on = b.dataset.lang === cur;
+      b.setAttribute("aria-checked", String(on));
+      b.tabIndex = on ? 0 : -1;
+    });
+  });
+}
+document.querySelectorAll(".lang-seg").forEach((seg) => {
+  seg.querySelectorAll("button").forEach((b) => {
+    b.onclick = () => {
+      if (seg.dataset.for === "talk") state.talkLang = b.dataset.lang;
+      else state.listenLang = b.dataset.lang;
+      renderLangPickers();
+      saveSettings();
+    };
+  });
+});
+
+/* ---------- Copy buttons ---------- */
+const COPY_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+const TICK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
+
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch {}
+  // Fallback for older Safari
+  const t = document.createElement("textarea");
+  t.value = text; t.setAttribute("readonly", ""); t.style.position = "fixed"; t.style.opacity = "0";
+  document.body.append(t); t.select(); t.setSelectionRange(0, text.length);
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch {}
+  t.remove();
+  return ok;
+}
+
+// getText is called at tap time, so the button always copies what's currently showing.
+function copyBtn(label, getText) {
+  const b = document.createElement("button");
+  b.type = "button"; b.className = "copy-btn";
+  b.innerHTML = COPY_SVG + "<span></span>";
+  b.querySelector("span").textContent = label;
+  b.setAttribute("aria-label", label);
+  b.onclick = async (e) => {
+    e.stopPropagation();
+    const text = (getText() || "").trim();
+    if (!text) return;
+    if (await copyText(text)) {
+      b.classList.add("done");
+      b.innerHTML = TICK_SVG + "<span>Copied</span>";
+      setTimeout(() => { b.classList.remove("done"); b.innerHTML = COPY_SVG + "<span></span>"; b.querySelector("span").textContent = label; }, 1400);
+    } else setStatus("Couldn't copy on this phone. Press and hold the text instead.");
+  };
+  return b;
+}
+
+// Copy buttons for the latest translations shown in Talk.
+function setCopyRow(id, buttons) {
+  const row = $(id);
+  row.innerHTML = "";
+  buttons.forEach((b) => row.append(b));
+  row.hidden = !buttons.length;
 }
 
 /* What the server needs to translate with the family's knowledge. */
@@ -767,12 +879,26 @@ function renderHistory() {
     const who = document.createElement("span");
     who.className = "who";
     who.textContent = h.dir === "out" ? "You said" : "She said";
+    if (h.lang && LANGS[h.lang]) {
+      const tag = document.createElement("span");
+      tag.className = "lang-tag"; tag.textContent = LANGS[h.lang];
+      who.append(tag);
+    }
     p.append(who, document.createTextNode(h.en));
     if (h.dir === "out" && h.roman) {
       const r = document.createElement("span");
       r.className = "roman-sm"; r.textContent = h.roman;
       p.append(r);
     }
+    const cr = document.createElement("div");
+    cr.className = "copy-row";
+    if (h.dir === "out") {
+      cr.append(copyBtn("Copy Urdu letters", () => h.other));
+      if (h.roman) cr.append(copyBtn("Copy Roman", () => h.roman));
+    } else {
+      cr.append(copyBtn("Copy English", () => h.en));
+    }
+    p.append(cr);
     const b = document.createElement("button");
     b.className = "replay " + (h.dir === "out" ? "you-c" : "her-c");
     b.setAttribute("aria-label", h.dir === "out" ? "Play in Urdu" : "Play in English");
@@ -813,13 +939,18 @@ async function sayIt() {
   const btn = $("#sayBtn");
   btn.disabled = true;
   try {
-    const res = await api("translate", { text: en, direction: "to", style: state.style, context: talkContext(), knowledge: knowledgePayload() });
+    const lang = state.talkLang;
+    const res = await api("translate", { text: en, direction: "to", lang, context: talkContext(), knowledge: knowledgePayload() });
     trackClaude(res);
     $("#outText").textContent = res.text;
     $("#outRoman").textContent = res.roman || "";
     $("#outRoman").hidden = !res.roman;
+    setCopyRow("#outCopy", [
+      copyBtn("Copy Urdu letters", () => $("#outText").textContent),
+      ...(res.roman ? [copyBtn("Copy Roman", () => $("#outRoman").textContent)] : []),
+    ]);
     $("#outCard").hidden = false;
-    addHistory({ dir: "out", en, other: res.text, roman: res.roman || "" });
+    addHistory({ dir: "out", en, other: res.text, roman: res.roman || "", lang });
     $("#enInput").value = "";
     await speak(res.text, "ur");
   } catch (e) {
@@ -919,19 +1050,21 @@ async function handleRecording() {
   setMic("busy");
   try {
     const samples = await blobToSamples16k(new Blob(chunks, { type: rec.mimeType || "audio/mp4" }));
-    const heard = await api("listen", { audio: toB64(encodeWav(samples, 16000)) });
-    trackAzureStt(2 * samples.length / 16000); // two recognisers run on the same audio
+    const lang = state.talkLang;
+    const heard = await api("listen", { audio: toB64(encodeWav(samples, 16000)), lang });
+    trackAzureStt((heard.n || 2) * samples.length / 16000); // Urdu uses one recogniser; Punjabi/Mirpuri run two on the same audio
     if (!heard.ur && !heard.pa) {
       setMic("idle");
       setStatus("Nothing was picked up. Tap the mic and try again, holding the phone a little closer.");
       return;
     }
-    const res = await api("translate", { direction: "from", ur: heard.ur, pa: heard.pa, context: talkContext(), knowledge: knowledgePayload() });
+    const res = await api("translate", { direction: "from", lang, ur: heard.ur, pa: heard.pa, context: talkContext(), knowledge: knowledgePayload() });
     trackClaude(res);
     $("#inText").textContent = res.text;
+    setCopyRow("#inCopy", [copyBtn("Copy English", () => $("#inText").textContent)]);
     $("#inCard").hidden = false;
     $("#repeatBtn").classList.toggle("nudge", /\(unclear\)/i.test(res.text));
-    addHistory({ dir: "in", en: res.text, heard: heard.ur || heard.pa });
+    addHistory({ dir: "in", en: res.text, heard: heard.ur || heard.pa, lang });
     setMic("idle");
     await speak(res.text, "en");
   } catch (e) {
@@ -940,11 +1073,10 @@ async function handleRecording() {
   }
 }
 
-const SAY_AGAIN = "ذرا پھر سے بولو، سمجھ نہیں آئی";
 $("#repeatBtn").onclick = async () => {
   unlock(); setStatus("");
   $("#repeatBtn").classList.remove("nudge");
-  try { await speak(SAY_AGAIN, "ur"); } catch (e) { setStatus(e.message); }
+  try { await speak(SAY_AGAIN[state.talkLang] || SAY_AGAIN.urdu, "ur"); } catch (e) { setStatus(e.message); }
 };
 
 $("#inReplay").onclick = async () => {
@@ -1069,7 +1201,7 @@ async function pump() {
 
   try {
     const context = live.lines.filter((l) => l.state === "done").slice(-4).map((l) => l.en);
-    const res = await api("translate", { direction: "live", text: heard, context, knowledge: knowledgePayload() });
+    const res = await api("translate", { direction: "live", lang: state.listenLang, text: heard, context, knowledge: knowledgePayload() });
     trackClaude(res);
     if (!res.text || res.text.trim() === "-") removeLine(line);
     else finishLine(line, { en: res.text, orig: heard });
@@ -1107,10 +1239,13 @@ function renderLive() {
     t.textContent = new Date(l.ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
     foot.append(t);
     if (l.state === "done") {
+      const acts = document.createElement("span");
+      acts.style.cssText = "display:flex;gap:8px;align-items:center";
       const f = document.createElement("button");
       f.className = "fix-btn"; f.textContent = "Fix";
       f.onclick = () => openFix({ dir: "in", source: l.orig, wrong: l.en, line: l });
-      foot.append(f);
+      acts.append(copyBtn("Copy", () => l.en), f);
+      foot.append(acts);
     }
     const en = document.createElement("p");
     en.className = "en"; en.textContent = l.en;
@@ -1213,6 +1348,14 @@ async function deleteAll(col) {
     await b.commit();
   }
 }
+$("#liveCopyAll").onclick = async () => {
+  const text = live.lines.filter((l) => l.state === "done")
+    .map((l) => new Date(l.ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) + "  " + l.en).join("\n");
+  if (!text) return;
+  const b = $("#liveCopyAll");
+  if (await copyText(text)) { b.textContent = "Copied"; setTimeout(() => (b.textContent = "Copy all"), 1400); }
+  else setStatus("Couldn't copy on this phone.");
+};
 $("#liveClear").onclick = async () => {
   if (!confirm("Clear the whole transcript? This also deletes the backup.")) return;
   live.lines = []; renderLive();
@@ -1266,7 +1409,7 @@ $("#fixSave").onclick = async () => {
       setStatus("");
     } else {
       // Re-translate with the fix now included, then play it.
-      const res = await api("translate", { text: f.source, direction: "to", style: state.style, context: talkContext(), knowledge: knowledgePayload() });
+      const res = await api("translate", { text: f.source, direction: "to", lang: f.item.lang || state.talkLang, context: talkContext(), knowledge: knowledgePayload() });
       trackClaude(res);
       f.item.other = res.text;
       f.item.roman = res.roman || "";
@@ -1338,7 +1481,6 @@ $("#signOutBtn").onclick = async () => {
   $("#settings").close();
   await signOut(auth);
 };
-$("#styleSel").onchange = (e) => { state.style = e.target.value; saveSettings(); };
 $("#speedSel").onchange = (e) => { state.speed = e.target.value; saveSettings(); };
 $("#voiceSel").onchange = (e) => { state.gender = e.target.value; saveSettings(); };
 $("#clearBtn").onclick = async () => {
@@ -1348,6 +1490,7 @@ $("#clearBtn").onclick = async () => {
 };
 
 /* ---------- Start up ---------- */
+renderLangPickers();
 if (get("showOrig", "")) { $("#showOrig").checked = true; $("#transcript").classList.remove("hide-orig"); }
 </script>
 </body>

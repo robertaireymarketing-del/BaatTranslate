@@ -1,6 +1,8 @@
 import { requireUser } from "../../lib/auth.mjs";
-// Speech -> text. There is no Mirpuri recogniser, so the audio goes through
-// Urdu and Punjabi recognisers in parallel and both transcripts are returned.
+// Speech -> text for Talk mode (her side).
+// Pure Urdu: just the Urdu recogniser.
+// Punjabi / Mirpuri mix: there's no Mirpuri recogniser and the Punjabi one is Indian (Gurmukhi),
+// so the audio goes through Urdu and Punjabi recognisers in parallel and both transcripts are returned.
 const recognise = async (audio, locale) => {
   const url =
     `https://${process.env.AZURE_SPEECH_REGION}.stt.speech.microsoft.com` +
@@ -23,9 +25,17 @@ export default async (req) => {
   const who = await requireUser(req);
   if (who.error) return who.error;
 
-  const { audio = "" } = await req.json();
+  const { audio = "", lang = "mirpuri" } = await req.json();
   if (!audio) return new Response("No audio", { status: 400 });
   const buf = Buffer.from(audio, "base64");
+
+  if (lang === "urdu") {
+    try {
+      return Response.json({ ur: await recognise(buf, "ur-PK"), pa: "", n: 1 });
+    } catch (e) {
+      return new Response(e.message, { status: 502 });
+    }
+  }
 
   const [ur, pa] = await Promise.allSettled([recognise(buf, "ur-PK"), recognise(buf, "pa-IN")]);
   if (ur.status === "rejected" && pa.status === "rejected") {
@@ -34,5 +44,6 @@ export default async (req) => {
   return Response.json({
     ur: ur.status === "fulfilled" ? ur.value : "",
     pa: pa.status === "fulfilled" ? pa.value : "",
+    n: 2,
   });
 };
