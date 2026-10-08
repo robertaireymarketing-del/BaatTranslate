@@ -273,6 +273,13 @@
     color: #fff; background: hsl(var(--conf-h) 65% 38%);
   }
 
+  #liveList .said-en {
+    font-size: 12px; font-weight: 700; padding: 1px 8px; border-radius: 999px; margin-left: 6px;
+    border: 1.5px solid var(--you); color: var(--you);
+  }
+  #liveList .conf + .said-en { margin-right: auto; }
+  #liveList .conf:has(+ .said-en) { margin-right: 0; }
+
   /* Language picker */
   .lang-pick { margin-bottom: 16px; }
   .lang-pick .lp-label { display: block; font-size: 15px; font-weight: 700; color: var(--muted); margin: 0 4px 6px; }
@@ -943,7 +950,7 @@ function renderHistory() {
     const p = document.createElement("p");
     const who = document.createElement("span");
     who.className = "who";
-    who.textContent = h.dir === "out" ? "You said" : "She said";
+    who.textContent = h.dir === "out" ? "You said" : h.saidEnglish ? "She said (in English)" : "She said";
     if (h.lang && LANGS[h.lang]) {
       const tag = document.createElement("span");
       tag.className = "lang-tag"; tag.textContent = LANGS[h.lang];
@@ -1117,13 +1124,13 @@ async function handleRecording() {
     const samples = await blobToSamples16k(new Blob(chunks, { type: rec.mimeType || "audio/mp4" }));
     const lang = state.talkLang;
     const heard = await api("listen", { audio: toB64(encodeWav(samples, 16000)), lang });
-    trackAzureStt((heard.n || 2) * samples.length / 16000); // Urdu uses one recogniser; Punjabi/Mirpuri run two on the same audio
-    if (!heard.ur && !heard.pa) {
+    trackAzureStt((heard.n || 2) * samples.length / 16000); // several recognisers (Urdu, English, and Punjabi when picked) run on the same audio
+    if (!heard.ur && !heard.pa && !heard.en) {
       setMic("idle");
       setStatus("Nothing was picked up. Tap the mic and try again, holding the phone a little closer.");
       return;
     }
-    const res = await api("translate", { direction: "from", lang, ur: heard.ur, pa: heard.pa, context: talkContext(), knowledge: knowledgePayload() });
+    const res = await api("translate", { direction: "from", lang, ur: heard.ur, pa: heard.pa, en: heard.en || "", context: talkContext(), knowledge: knowledgePayload() });
     trackClaude(res);
     if (!res.text) {
       setMic("idle");
@@ -1135,7 +1142,7 @@ async function handleRecording() {
     setCopyRow("#inCopy", [copyBtn("Copy English", () => $("#inText").textContent)]);
     $("#inCard").hidden = false;
     $("#repeatBtn").classList.toggle("nudge", /\(unclear\)/i.test(res.text) || (typeof res.confidence === "number" && res.confidence < 50));
-    addHistory({ dir: "in", en: res.text, heard: heard.ur || heard.pa, lang });
+    addHistory({ dir: "in", en: res.text, heard: heard.ur || heard.pa || heard.en, lang, ...(res.saidEnglish ? { saidEnglish: true } : {}) });
     setMic("idle");
     await speak(res.text, "en");
   } catch (e) {
@@ -1260,11 +1267,12 @@ async function pump() {
   live.sending = true; live.lastSendAt = Date.now();
   const line = addLiveLine();
 
-  let heard = "";
+  let heard = "", heardLang = "";
   try {
-    const res = await api("live-listen", { audio: toB64(encodeWav(samples, RATE)), hint: whisperHint() });
-    trackGroq(samples.length / RATE);
-    heard = res.text;
+    // "auto": Whisper works out the language, so a switch to English comes through as English words.
+    const res = await api("live-listen", { audio: toB64(encodeWav(samples, RATE)), lang: "auto", hint: whisperHint() });
+    for (let i = 0; i < (res.passes || 1); i++) trackGroq(samples.length / RATE);
+    heard = res.text; heardLang = res.language || "";
   } catch (e) {
     finishLine(line, null, e.status === 429 ? "Too much at once — missed a bit." : "Couldn't hear this bit.");
   }
@@ -1274,10 +1282,10 @@ async function pump() {
 
   try {
     const context = liveContext(4);
-    const res = await api("translate", { direction: "live", lang: state.listenLang, text: heard, context, knowledge: knowledgePayload() });
+    const res = await api("translate", { direction: "live", lang: state.listenLang, text: heard, heardLang, context, knowledge: knowledgePayload() });
     trackClaude(res);
     if (!res.text || res.text.trim() === "-") removeLine(line);
-    else finishLine(line, { en: res.text, orig: heard, confidence: res.confidence });
+    else finishLine(line, { en: res.text, orig: heard, confidence: res.confidence, saidEnglish: res.saidEnglish });
   } catch {
     finishLine(line, null, "Couldn't translate this bit.");
   }
@@ -1295,8 +1303,10 @@ function finishLine(line, data, err) {
     line.state = "done"; line.en = data.en; line.orig = data.orig;
     if (data.roman) line.roman = data.roman;
     if (typeof data.confidence === "number") line.confidence = data.confidence;
+    if (data.saidEnglish) line.saidEnglish = true;
     const rec = { ts: line.ts, en: line.en, orig: line.orig };
     if (typeof line.confidence === "number") rec.confidence = line.confidence;
+    if (line.saidEnglish) rec.saidEnglish = true;
     if (line.who) { rec.who = line.who; rec.roman = line.roman || ""; }
     if (uid) setDoc(doc(userCol("live"), line.id), rec).catch(() => {});
   } else { line.state = "failed"; line.en = err; }
@@ -1366,6 +1376,11 @@ function renderLive() {
       pill.textContent = l.confidence >= 85 ? "Sure" : l.confidence >= 60 ? "Fairly sure" : l.confidence >= 35 ? "Unsure" : "Guess";
       pill.title = l.confidence + "% sure";
       t.after(pill);
+    }
+    if (l.state === "done" && l.saidEnglish) {
+      const tag = document.createElement("span");
+      tag.className = "said-en"; tag.textContent = "Said in English";
+      (foot.querySelector(".conf") || t).after(tag);
     }
     const en = document.createElement("p");
     en.className = "en"; en.textContent = l.en;

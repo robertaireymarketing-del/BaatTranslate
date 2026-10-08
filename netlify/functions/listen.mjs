@@ -1,8 +1,9 @@
 import { requireUser } from "../../lib/auth.mjs";
 // Speech -> text for Talk mode (her side).
-// Pure Urdu: just the Urdu recogniser.
+// Pure Urdu: Urdu + English recognisers.
 // Punjabi / Mirpuri mix: there's no Mirpuri recogniser and the Punjabi one is Indian (Gurmukhi),
-// so the audio goes through Urdu and Punjabi recognisers in parallel and both transcripts are returned.
+// so the audio goes through Urdu, Punjabi and English recognisers in parallel.
+// The translator compares them to work out what was said, including when she switches to English.
 const recognise = async (audio, locale) => {
   const url =
     `https://${process.env.AZURE_SPEECH_REGION}.stt.speech.microsoft.com` +
@@ -29,21 +30,15 @@ export default async (req) => {
   if (!audio) return new Response("No audio", { status: 400 });
   const buf = Buffer.from(audio, "base64");
 
-  if (lang === "urdu") {
-    try {
-      return Response.json({ ur: await recognise(buf, "ur-PK"), pa: "", n: 1 });
-    } catch (e) {
-      return new Response(e.message, { status: 502 });
-    }
+  // An English recogniser always runs too, so if she switches to English it comes through as English.
+  const locales = lang === "urdu" ? ["ur-PK", "en-GB"] : ["ur-PK", "pa-IN", "en-GB"];
+  const results = await Promise.allSettled(locales.map((l) => recognise(buf, l)));
+  if (results.every((x) => x.status === "rejected")) {
+    return new Response(results[0].reason.message, { status: 502 });
   }
-
-  const [ur, pa] = await Promise.allSettled([recognise(buf, "ur-PK"), recognise(buf, "pa-IN")]);
-  if (ur.status === "rejected" && pa.status === "rejected") {
-    return new Response(ur.reason.message, { status: 502 });
-  }
-  return Response.json({
-    ur: ur.status === "fulfilled" ? ur.value : "",
-    pa: pa.status === "fulfilled" ? pa.value : "",
-    n: 2,
-  });
+  const got = (l) => {
+    const i = locales.indexOf(l);
+    return i >= 0 && results[i].status === "fulfilled" ? results[i].value : "";
+  };
+  return Response.json({ ur: got("ur-PK"), pa: got("pa-IN"), en: got("en-GB"), n: locales.length });
 };
