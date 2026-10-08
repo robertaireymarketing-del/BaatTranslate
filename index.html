@@ -64,6 +64,21 @@
     display: flex; align-items: center; justify-content: center; gap: 10px;
   }
   .say[disabled] { opacity: .6; }
+  .say-row { display: flex; gap: 10px; margin-top: 12px; }
+  .say-row .say { margin-top: 0; flex: 1; }
+  .speak-en {
+    flex: none; width: 64px; min-height: 56px; border-radius: 14px; border: 2px solid var(--you);
+    background: transparent; color: var(--you); display: grid; place-items: center; padding: 0; position: relative;
+  }
+  .speak-en svg { width: 26px; height: 26px; }
+  .speak-en .stop-shape, .speak-en .dots { display: none; }
+  .speak-en[data-state="rec"] { background: var(--rec); border-color: var(--rec); color: #fff; }
+  .speak-en[data-state="rec"] .mic-shape { display: none; }
+  .speak-en[data-state="rec"] .stop-shape { display: block; }
+  .speak-en[data-state="busy"] .mic-shape { display: none; }
+  .speak-en[data-state="busy"] .dots { display: flex; gap: 5px; }
+  .speak-en .dots span { width: 8px; height: 8px; background: var(--you); }
+  .rec-hint { margin: 10px 0 0; font-size: 15px; color: var(--rec); }
   .say svg { width: 22px; height: 22px; }
 
   .out { margin-top: 16px; display: flex; gap: 12px; align-items: flex-start; }
@@ -235,10 +250,18 @@
     <section class="side" aria-labelledby="youHead">
       <h2 id="youHead">You, in English</h2>
       <textarea id="enInput" placeholder="Type what you want to say, or tap the keyboard mic to speak it" enterkeyhint="send"></textarea>
-      <button class="say" id="sayBtn">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19 5a10 10 0 0 1 0 14"/></svg>
-        <span>Say it in Urdu</span>
-      </button>
+      <div class="say-row">
+        <button class="speak-en" id="speakEnBtn" data-state="idle" aria-label="Speak English instead of typing">
+          <svg class="mic-shape" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v4"/></svg>
+          <svg class="stop-shape" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+          <span class="dots" aria-hidden="true"><span></span><span></span><span></span></span>
+        </button>
+        <button class="say" id="sayBtn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19 5a10 10 0 0 1 0 14"/></svg>
+          <span>Say it in Urdu</span>
+        </button>
+      </div>
+      <p class="rec-hint" id="recHint" hidden>Listening… speak in English, then tap the red button.</p>
       <div class="out" id="outCard" hidden>
         <p class="urdu" id="outText" lang="ur"></p>
         <button class="replay you-c" id="outReplay" aria-label="Play again">
@@ -776,12 +799,65 @@ $("#outReplay").onclick = async () => {
   try { await speak($("#outText").textContent, "ur"); } catch (e) { setStatus(e.message); }
 };
 
+/* ================= TALK: you speak English instead of typing =================
+   Tap the mic, speak, tap again. It writes down what you said, then translates and plays it straight away. */
+let enRec = null, enChunks = [], enStream = null, enTimer = null;
+
+function setEnMic(mode) {
+  const b = $("#speakEnBtn");
+  b.dataset.state = mode;
+  b.disabled = mode === "busy";
+  b.setAttribute("aria-label", mode === "rec" ? "Tap to finish" : mode === "busy" ? "Working it out" : "Speak English instead of typing");
+  $("#recHint").hidden = mode !== "rec";
+}
+
+$("#speakEnBtn").onclick = async () => {
+  unlock(); setStatus("");
+  if (enRec && enRec.state === "recording") { enRec.stop(); return; }
+  if (rec && rec.state === "recording") return; // her mic is in use
+  if (live.on) await stopLive();
+  try {
+    enStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch {
+    setStatus("The microphone is blocked. Allow it in Settings › Safari › Microphone, then reload.");
+    return;
+  }
+  enChunks = [];
+  enRec = new MediaRecorder(enStream);
+  enRec.ondataavailable = (e) => { if (e.data.size) enChunks.push(e.data); };
+  enRec.onstop = handleEnglish;
+  enRec.start();
+  setEnMic("rec");
+  enTimer = setTimeout(() => { if (enRec.state === "recording") enRec.stop(); }, 30000);
+};
+
+async function handleEnglish() {
+  clearTimeout(enTimer);
+  enStream.getTracks().forEach((t) => t.stop()); // free the mic so the answer plays on the loudspeaker
+  setEnMic("busy");
+  try {
+    const samples = await blobToSamples16k(new Blob(enChunks, { type: enRec.mimeType || "audio/mp4" }));
+    if (samples.length < 16000 * 0.4) { setEnMic("idle"); return; } // accidental tap
+    const res = await api("live-listen", { audio: toB64(encodeWav(samples, 16000)), lang: "en", hint: whisperHint() });
+    trackGroq(samples.length / 16000);
+    const said = (res.text || "").trim();
+    setEnMic("idle");
+    if (!said) { setStatus("Didn't catch that. Tap the mic and try again."); return; }
+    $("#enInput").value = said;
+    await sayIt();
+  } catch (e) {
+    setEnMic("idle");
+    setStatus(e.message);
+  }
+}
+
 /* ================= TALK: her -> you ================= */
 let rec = null, chunks = [], recStream = null, stopTimer = null;
 
 $("#micBtn").onclick = async () => {
   unlock(); setStatus("");
   if (rec && rec.state === "recording") { rec.stop(); return; }
+  if (enRec && enRec.state === "recording") return; // your mic is in use
   if (live.on) await stopLive();
   try {
     recStream = await navigator.mediaDevices.getUserMedia({ audio: true });
