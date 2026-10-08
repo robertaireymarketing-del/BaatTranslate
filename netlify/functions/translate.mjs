@@ -61,6 +61,9 @@ const contextBlock = (ctx, label) =>
       ctx.slice(-6).map((c) => "- " + String(c).slice(0, 300)).join("\n") + "\n\n"
     : "";
 
+// Models found to reject a forced tool choice (remembered while this function stays warm).
+const NO_FORCE = new Set();
+
 const CONFIDENCE =
   "Also rate how sure you are, from 0 to 100, that your English matches what was actually meant. Be honest and strict: " +
   "90-100 only when the transcript is clear and the meaning is unambiguous; 65-89 when it is mostly clear but you filled in a word or two; " +
@@ -156,29 +159,48 @@ export default async (req) => {
     tool = TOOLS.caption;
   }
 
-  const r = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "x-api-key": process.env.ANTHROPIC_API_KEY,
-      "anthropic-version": "2023-06-01",
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: 1000,
-      // Cached when long enough, so the family notes don't cost full price on every line.
-      system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
-      // The answer must come back as the tool's fields, so there is nowhere for reasoning or notes to leak out.
-      tools: [tool],
-      tool_choice: { type: "tool", name: tool.name },
-      messages: [{ role: "user", content: userText.slice(0, 6000) }],
-    }),
-  });
+  // Ask for the answer as the tool's fields, so reasoning or notes can't end up in the translation.
+  // Some models refuse a *forced* tool choice; for those we ask nicely instead ("auto") and remember it.
+  const callClaude = (force) =>
+    fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "x-api-key": process.env.ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: 1500,
+        // Cached when long enough, so the family notes don't cost full price on every line.
+        system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
+        tools: [tool],
+        tool_choice: force ? { type: "tool", name: tool.name } : { type: "auto" },
+        messages: [{ role: "user", content: userText.slice(0, 6000) }],
+      }),
+    });
 
-  const j = await r.json().catch(() => ({}));
+  let force = !NO_FORCE.has(model);
+  let r = await callClaude(force);
+  let j = await r.json().catch(() => ({}));
+  if (!r.ok && force && /tool_choice/i.test(j.error?.message || "")) {
+    NO_FORCE.add(model);
+    r = await callClaude(false);
+    j = await r.json().catch(() => ({}));
+  }
   if (!r.ok) return new Response("Translation failed: " + (j.error?.message || r.status), { status: 502 });
 
-  const out = (j.content || []).find((b) => b.type === "tool_use")?.input || {};
+  let out = (j.content || []).find((b) => b.type === "tool_use" && b.name === tool.name)?.input;
+  if (!out) {
+    // No form filled in: use the plain text, the way the app worked before.
+    const txt = (j.content || []).filter((b) => b.type === "text").map((b) => b.text).join("").trim();
+    if (tool.name === "say") {
+      const [spoken, roman = ""] = txt.split(/\n?\s*#{3,}\s*\n?/);
+      out = { spoken, roman };
+    } else {
+      out = { english: txt, confidence: null, junk: txt === "-" };
+    }
+  }
   const meta = { lang, usage: j.usage || null, model };
 
   if (body.direction === "to") {
@@ -188,7 +210,9 @@ export default async (req) => {
   }
 
   const english = clean(out.english);
-  const confidence = Math.max(0, Math.min(100, Math.round(Number(out.confidence) || 0)));
+  const confidence = out.confidence == null || isNaN(Number(out.confidence))
+    ? null
+    : Math.max(0, Math.min(100, Math.round(Number(out.confidence))));
   if (out.junk === true || !english) {
     return Response.json({ text: body.direction === "live" ? "-" : "", confidence: 0, ...meta });
   }
