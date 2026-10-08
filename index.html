@@ -86,6 +86,9 @@
     flex: 1; margin: 0; font-family: "Noto Nastaliq Urdu", serif; font-size: 28px;
     line-height: 2.3; direction: rtl; text-align: right;
   }
+  .out-text { flex: 1; min-width: 0; }
+  .roman { margin: 4px 0 0; font-size: 20px; line-height: 1.4; color: var(--you); font-weight: 700; }
+  .roman-sm { display: block; font-size: 16px; color: var(--you); margin-top: 2px; }
 
   .her-side { text-align: center; padding: 26px 18px 22px; }
   .mic {
@@ -263,7 +266,10 @@
       </div>
       <p class="rec-hint" id="recHint" hidden>Listening… speak in English, then tap the red button.</p>
       <div class="out" id="outCard" hidden>
-        <p class="urdu" id="outText" lang="ur"></p>
+        <div class="out-text">
+          <p class="urdu" id="outText" lang="ur"></p>
+          <p class="roman" id="outRoman" hidden></p>
+        </div>
         <button class="replay you-c" id="outReplay" aria-label="Play again">
           <svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15l13-7.5z"/></svg>
         </button>
@@ -737,6 +743,11 @@ function renderHistory() {
     who.className = "who";
     who.textContent = h.dir === "out" ? "You said" : "She said";
     p.append(who, document.createTextNode(h.en));
+    if (h.dir === "out" && h.roman) {
+      const r = document.createElement("span");
+      r.className = "roman-sm"; r.textContent = h.roman;
+      p.append(r);
+    }
     const b = document.createElement("button");
     b.className = "replay " + (h.dir === "out" ? "you-c" : "her-c");
     b.setAttribute("aria-label", h.dir === "out" ? "Play in Urdu" : "Play in English");
@@ -780,8 +791,10 @@ async function sayIt() {
     const res = await api("translate", { text: en, direction: "to", style: state.style, context: talkContext(), knowledge: knowledgePayload() });
     trackClaude(res);
     $("#outText").textContent = res.text;
+    $("#outRoman").textContent = res.roman || "";
+    $("#outRoman").hidden = !res.roman;
     $("#outCard").hidden = false;
-    addHistory({ dir: "out", en, other: res.text });
+    addHistory({ dir: "out", en, other: res.text, roman: res.roman || "" });
     $("#enInput").value = "";
     await speak(res.text, "ur");
   } catch (e) {
@@ -1231,8 +1244,9 @@ $("#fixSave").onclick = async () => {
       const res = await api("translate", { text: f.source, direction: "to", style: state.style, context: talkContext(), knowledge: knowledgePayload() });
       trackClaude(res);
       f.item.other = res.text;
+      f.item.roman = res.roman || "";
       renderHistory();
-      updateDoc(doc(userCol("history"), f.item.id), { other: res.text }).catch(() => {});
+      updateDoc(doc(userCol("history"), f.item.id), { other: res.text, roman: res.roman || "" }).catch(() => {});
       await speak(res.text, "ur");
     }
   } catch (e) {

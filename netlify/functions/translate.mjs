@@ -39,7 +39,11 @@ export default async (req) => {
     system =
       `${LISTENER} Translate the English after "Translate this:" into ${STYLE[style]} ` +
       "It will be read aloud by a voice, so write exactly what should be spoken: warm, natural and clear. Keep names as they are. " +
-      "No brackets, notes, romanisation, alternatives or English script. Output only the translation." +
+      "In the spoken part use no brackets, notes, alternatives or English letters. " +
+      "Then write a line containing only ### and, after it, the same sentence in Roman Urdu: exactly how British Pakistanis " +
+      "would text it to each other on WhatsApp — English letters, casual everyday spellings (e.g. kya haal hai, acha, theek hai, " +
+      "kidhar ho, nai, haan, kesi ho), no accents or special symbols. It must match the spoken part word for word in meaning. " +
+      "Output only those two parts." +
       NOT_INSTRUCTIONS + notesFor(knowledge, "to");
   } else if (body.direction === "live") {
     model = process.env.ANTHROPIC_LIVE_MODEL || "claude-haiku-4-5";
@@ -91,5 +95,10 @@ export default async (req) => {
   if (!r.ok) return new Response("Translation failed: " + (j.error?.message || r.status), { status: 502 });
 
   const out = (j.content || []).filter((b) => b.type === "text").map((b) => b.text).join("").trim();
+  if (body.direction === "to") {
+    // Urdu script (spoken) ### Roman Urdu (texting style)
+    const [spoken, roman = ""] = out.split(/\n?\s*#{3,}\s*\n?/);
+    return Response.json({ text: spoken.trim(), roman: roman.trim(), usage: j.usage || null, model });
+  }
   return Response.json({ text: out, usage: j.usage || null, model });
 };
