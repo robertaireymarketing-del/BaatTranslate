@@ -6,3 +6,6 @@
   # These values are meant to be public (they also appear in firebase-config.js and firestore.rules),
   # so Netlify's secret scan shouldn't block the deploy because of them.
   SECRETS_SCAN_OMIT_KEYS = "FIREBASE_PROJECT_ID,ALLOWED_EMAILS"
+  # The Firebase web API key is public by design (it is sent to every browser that opens the app).
+  # Only this exact value is ignored; smart detection still checks for any other key.
+  SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES = "AIzaSyC1QqKjlqJ1puRK3NlJU2NKZCdounng9vA"
