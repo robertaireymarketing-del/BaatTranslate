@@ -250,6 +250,20 @@
   .tr-acts { display: flex; gap: 6px; }
   #transcript .empty { margin-top: 10px; line-height: 1.5; }
 
+  /* "What they're talking about" — sits above the transcript, never scrolls away */
+  .gist {
+    flex: none; margin: 0 0 10px; padding: 12px 16px 14px; border-radius: 18px;
+    background: var(--surface); border: 1px solid var(--line); border-left: 5px solid var(--her);
+  }
+  .gist[data-sure="low"] { border-left-color: var(--rec); }
+  .gist-head {
+    display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
+    font-size: 13px; font-weight: 700; letter-spacing: 0.02em; color: var(--her); text-transform: uppercase;
+  }
+  .gist-head time { font-weight: 500; text-transform: none; letter-spacing: 0; color: var(--muted); }
+  #gistText { margin: 6px 0 0; font-size: 19px; line-height: 1.4; color: var(--ink); max-height: 5.6em; overflow-y: auto; }
+  #gistText.waiting { color: var(--muted); font-size: 16px; }
+
   .dock {
     flex: none; background: var(--surface); border-top: 1px solid var(--line);
     border-radius: 0 0 22px 22px; padding: 10px 12px 12px; margin-bottom: 8px;
@@ -465,6 +479,12 @@
       </div>
     </div>
 
+    <!-- The gist: always on screen while listening -->
+    <section class="gist" id="gist" hidden aria-live="polite">
+      <div class="gist-head"><span>What they're talking about</span><time id="gistTime"></time></div>
+      <p id="gistText"></p>
+    </section>
+
     <!-- The conversation scrolls here, between the controls and the dock -->
     <section class="side transcript hide-orig" id="transcript">
       <div class="tr-head">
@@ -585,8 +605,9 @@ import { firebaseConfig } from "./firebase-config.js";
 const PRICES = {
   usdToGbp: 0.75,
   claude: {                      // $ per million tokens [input, output]
-    "claude-haiku-4-5": [1, 5],  // Listen mode
-    "claude-sonnet-5-5": [3, 15],// Talk mode (estimate — check Anthropic's pricing page)
+    "claude-haiku-4-5": [1, 5],    // older Listen mode
+    "claude-haiku-5-5": [0.1, 0.5],// cheap option for Listen (prompts under 100k tokens)
+    "claude-sonnet-5-5": [2, 10],  // Talk, Listen captions and the gist
     fallback: [3, 15],
   },
   groqPerHour: 0.111,            // Whisper Large v3, billed min 10 s per request
@@ -1310,10 +1331,12 @@ const VAD = {
   minThreshold: 0.012,  // ignore anything quieter than this
   overNoise: 3,         // speech must be this many times louder than the room's background
   preRoll: 0.4,         // seconds kept from just before speech starts
-  endSilence: 0.55,     // pause that ends a chunk (once it's at least minChunk long)
-  longSilence: 1.0,     // pause that ends a chunk whatever its length
-  minChunk: 2.5,        // seconds
-  maxChunk: 14,         // seconds
+  // Whisper hears casual speech far better in whole sentences than in 2–3 second scraps,
+  // and Groq bills at least 10 s per request anyway, so chunks run longer.
+  endSilence: 0.7,      // pause that ends a chunk (once it's at least minChunk long)
+  longSilence: 1.6,     // pause that ends a chunk whatever its length
+  minChunk: 7,          // seconds
+  maxChunk: 22,         // seconds
   minSpeech: 0.5,       // chunks with less speech than this are dropped
   minGap: 0.8,          // seconds between sends normally
   slowGap: 3.2,         // after Groq says "too many" (free plan: 20 a minute), back off to this for a minute
@@ -1328,6 +1351,7 @@ const live = {
   slowUntil: 0,    // back-off after a "too many requests" from Groq
   paused: false,   // mic released while the phone speaks your reply
   reply: null,     // { parts, len, speech, silence } while you're speaking English
+  lastHeard: "",   // raw transcript of the previous chunk, so the next one carries on from it
 };
 
 function downsample(input, inRate) {
@@ -1412,7 +1436,7 @@ async function pump() {
   let heard = "", heardLang = "";
   try {
     // "auto": Whisper works out the language, so a switch to English comes through as English words.
-    const res = await api("live-listen", { audio: toB64(encodeWav(samples, RATE)), lang: "auto", hint: whisperHint() });
+    const res = await api("live-listen", { audio: toB64(encodeWav(samples, RATE)), lang: "auto", hint: whisperHint(), prev: live.lastHeard });
     for (let i = 0; i < (res.passes || 1); i++) trackGroq(samples.length / RATE);
     heard = res.text; heardLang = res.language || "";
   } catch (e) {
@@ -1431,10 +1455,12 @@ async function pump() {
   if (live.queue.length) pump();
   if (!heard) { if (line.state === "pending") removeLine(line); return; }
   line.orig = heard; line.en = "Translating…"; renderLive(); // show progress straight away
+  const prevHeard = live.lastHeard;
+  live.lastHeard = heard; // the next chunk's hearing and translation both carry on from this
 
   try {
-    const context = liveContext(4);
-    const res = await api("translate", { direction: "live", lang: state.listenLang, text: heard, heardLang, context, knowledge: knowledgePayload("in", heard) });
+    const context = liveContext(8);
+    const res = await api("translate", { direction: "live", lang: state.listenLang, text: heard, heardLang, prevHeard, context, knowledge: knowledgePayload("in", heard) });
     trackClaude(res);
     if (!res.text || res.text.trim() === "-") removeLine(line);
     else finishLine(line, { en: res.text, orig: heard, confidence: res.confidence, saidEnglish: res.saidEnglish });
@@ -1465,8 +1491,55 @@ function finishLine(line, data, err) {
   renderLive();
 }
 // Recent captions given to the translator, so replies and captions follow the conversation.
-const liveContext = (n) => live.lines.filter((l) => l.state === "done").slice(-n)
+// Only the last 10 minutes — an old conversation from earlier in the day would mislead it.
+const recentLines = (mins) => live.lines.filter((l) => l.state === "done" && l.ts >= Date.now() - mins * 60000);
+const liveContext = (n) => recentLines(10).slice(-n)
   .map((l) => (l.who === "you" ? "Robert: " : "") + l.en);
+
+/* ---------- "What they're talking about" ----------
+   About once a minute, the last few minutes of captions are summarised in a line or two.
+   A summary across many lines is much more reliable than any single caption. */
+const GIST = { every: 50, minNew: 2, windowMins: 4 };
+const gist = { text: "", confidence: null, at: 0, busy: false, seen: 0 };
+
+function renderGist() {
+  const box = $("#gist");
+  if (!live.on && !gist.text) { box.hidden = true; return; }
+  box.hidden = false;
+  const t = $("#gistText");
+  if (gist.text) {
+    t.textContent = gist.text; t.classList.remove("waiting");
+    $("#gistTime").textContent = "updated " + new Date(gist.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  } else {
+    t.textContent = "Listening… a summary appears after a minute or so of talking."; t.classList.add("waiting");
+    $("#gistTime").textContent = "";
+  }
+  box.dataset.sure = gist.confidence == null ? "" : gist.confidence >= 70 ? "high" : gist.confidence >= 40 ? "mid" : "low";
+}
+
+async function maybeGist(force = false) {
+  if (gist.busy) return;
+  const lines = recentLines(GIST.windowMins).filter((l) => l.ts >= live.startedAt - GIST.windowMins * 60000);
+  const theirs = lines.filter((l) => l.who !== "you");
+  const fresh = theirs.filter((l) => l.ts > gist.seen).length;
+  const due = force || (!gist.text ? theirs.length >= 3 : (Date.now() - gist.at) / 1000 >= GIST.every && fresh >= GIST.minNew);
+  if (!due || !theirs.length) return;
+  gist.busy = true;
+  try {
+    const payload = lines.map((l) => ({ en: l.en, orig: l.orig, confidence: l.confidence, who: l.who === "you" ? "you" : "" }));
+    const res = await api("translate", {
+      direction: "gist", lang: state.listenLang, lines: payload, previous: gist.text,
+      knowledge: knowledgePayload("in", theirs.map((l) => l.orig).join(" ")),
+    });
+    trackClaude(res);
+    if (res.text) {
+      gist.text = res.text; gist.confidence = res.confidence; gist.at = Date.now();
+      gist.seen = Math.max(...theirs.map((l) => l.ts));
+      renderGist();
+    }
+  } catch {} // a missed summary just waits for the next one
+  gist.busy = false;
+}
 function removeLine(line) { live.lines = live.lines.filter((l) => l !== line); renderLive(); }
 
 function renderLive() {
@@ -1601,6 +1674,10 @@ async function startLive() {
   live.on = true;
   live.noise = 0.004; live.inSpeech = false; live.pre = []; live.preLen = 0;
   live.startedAt = live.lastTickAt = Date.now();
+  live.lastHeard = "";
+  // Fresh summary for each session — you might be switching on in the middle of something new.
+  Object.assign(gist, { text: "", confidence: null, at: 0, seen: 0 });
+  renderGist();
   live.tick = setInterval(tickLive, 1000);
   await requestWakeLock();
 
@@ -1619,6 +1696,7 @@ function tickLive() {
   const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
   $("#sessTime").textContent = (h ? h + ":" + String(m).padStart(2, "0") : m) + ":" + String(sec).padStart(2, "0");
   if (s % 10 === 0) saveUsage();
+  if (s % 5 === 0) maybeGist();
 }
 
 async function stopLive() {
@@ -1635,6 +1713,7 @@ async function stopLive() {
   try { await live.wakeLock?.release(); } catch {}
   live.wakeLock = null;
   $("#meterBar").style.width = "0";
+  renderGist();
   $("#liveBtn").dataset.on = "false";
   $("#liveLabel").textContent = "Listen";
   $("#tabDot").hidden = true;
@@ -1802,7 +1881,8 @@ $("#liveCopyAll").onclick = async () => {
 };
 $("#liveClear").onclick = async () => {
   if (!confirm("Clear the whole transcript? This also deletes the backup.")) return;
-  live.lines = []; renderLive();
+  live.lines = []; live.lastHeard = ""; renderLive();
+  Object.assign(gist, { text: "", confidence: null, at: 0, seen: 0 }); renderGist();
   try { await deleteAll(userCol("live")); } catch (e) { setStatus(e.message); }
 };
 
