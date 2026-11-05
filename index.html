@@ -1375,6 +1375,37 @@ function concat(arrs, gapSamples = 0) {
   return out;
 }
 
+/* Voice pitch: tells Robert's English (the only man speaking English) apart from the sisters'.
+   Typical speaking pitch is roughly 85–165 Hz for men and 165–260 Hz for women. We take the median
+   pitch of the voiced parts of a chunk using autocorrelation. */
+const MALE_MAX_HZ = 165;
+function voicePitch(samples) {
+  const W = 400, HOP = 640, MIN_LAG = Math.floor(RATE / 400), MAX_LAG = Math.floor(RATE / 70);
+  const f0s = [];
+  for (let s = 0; s + W + MAX_LAG < samples.length && f0s.length < 300; s += HOP) {
+    let e = 0;
+    for (let i = 0; i < W; i++) e += samples[s + i] * samples[s + i];
+    if (Math.sqrt(e / W) < VAD.minThreshold * 1.5) continue; // too quiet to be speech
+    const corr = new Float32Array(MAX_LAG + 1);
+    let best = 0;
+    for (let lag = MIN_LAG; lag <= MAX_LAG; lag++) {
+      let c = 0, e2 = 0;
+      for (let i = 0; i < W; i++) { c += samples[s + i] * samples[s + i + lag]; e2 += samples[s + i + lag] * samples[s + i + lag]; }
+      corr[lag] = c / Math.sqrt(e * e2 + 1e-12);
+      if (corr[lag] > best) best = corr[lag];
+    }
+    if (best < 0.55) continue; // not clearly voiced
+    // The shortest lag that's nearly as strong as the best avoids halving a woman's pitch by mistake.
+    let lag = MIN_LAG;
+    while (lag < MAX_LAG && !(corr[lag] >= best * 0.88 && corr[lag] >= corr[lag - 1] && corr[lag] >= corr[lag + 1])) lag++;
+    f0s.push(RATE / lag);
+  }
+  if (f0s.length < 8) return null; // not enough voiced speech to judge
+  f0s.sort((a, b) => a - b);
+  return f0s[Math.floor(f0s.length / 2)];
+}
+const soundsLikeRobert = (hz) => hz != null && hz < MALE_MAX_HZ;
+
 function onFrame(frame) {
   let sum = 0;
   for (let i = 0; i < frame.length; i++) sum += frame[i] * frame[i];
@@ -1430,6 +1461,7 @@ async function pump() {
     const s = live.queue.shift(); batch.push(s); total += s.length;
   }
   const samples = concat(batch, Math.round(0.3 * RATE));
+  const pitch = voicePitch(samples);
   live.sending = true; live.lastSendAt = Date.now();
   const line = addLiveLine();
 
@@ -1458,14 +1490,35 @@ async function pump() {
   const prevHeard = live.lastHeard;
   live.lastHeard = heard; // the next chunk's hearing and translation both carry on from this
 
+  // A man speaking English is you: translate it into her language, ready to play.
+  if (heardLang === "english" && soundsLikeRobert(pitch)) { await yourEnglish(line, heard); return; }
+
   try {
     const context = liveContext(8);
     const res = await api("translate", { direction: "live", lang: state.listenLang, text: heard, heardLang, prevHeard, context, knowledge: knowledgePayload("in", heard) });
     trackClaude(res);
     if (!res.text || res.text.trim() === "-") removeLine(line);
+    // Whisper didn't label it English, but the translator found it was mostly English in a man's voice.
+    else if (res.saidEnglish && soundsLikeRobert(pitch)) await yourEnglish(line, res.text);
     else finishLine(line, { en: res.text, orig: heard, confidence: res.confidence, saidEnglish: res.saidEnglish });
   } catch {
     finishLine(line, null, "Couldn't translate this bit.");
+  }
+}
+
+// Turns a room line into one of your reply lines: your English, the translation, and a play button.
+// Nothing is spoken until you tap play.
+async function yourEnglish(line, said) {
+  said = String(said || "").trim();
+  Object.assign(line, { who: "you", heardYou: true, en: said, orig: "", state: "pending" });
+  delete line.confidence; delete line.saidEnglish;
+  renderLive();
+  try {
+    const res = await api("translate", { text: said, direction: "to", lang: state.listenLang, context: liveContext(6), knowledge: knowledgePayload("out", said) });
+    trackClaude(res);
+    finishLine(line, { en: said, orig: res.text, roman: res.roman || "" });
+  } catch {
+    finishLine(line, null, "Couldn't translate what you said.");
   }
 }
 
@@ -1558,7 +1611,7 @@ function renderLive() {
     if (l.who === "you") {
       // Your reply: English you said, then the translation in big Urdu letters she can read off the screen.
       li.classList.add("mine");
-      t.textContent = "You · " + t.textContent;
+      t.textContent = (l.heardYou ? "You (picked up) · " : "You · ") + t.textContent;
       if (l.state === "done") {
         const acts = document.createElement("span");
         acts.style.cssText = "display:flex;gap:8px;align-items:center";
