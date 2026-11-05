@@ -136,7 +136,11 @@
     flex: none; width: 52px; height: 52px; border-radius: 50%; border: 2px solid currentColor;
     background: transparent; display: grid; place-items: center; padding: 0;
   }
-  .replay svg { width: 22px; height: 22px; }
+  .replay svg { width: 22px; height: 22px; pointer-events: none; }
+  /* Taps register instantly (no double-tap-zoom delay) and land even slightly outside the circle. */
+  [data-tap] { position: relative; touch-action: manipulation; -webkit-tap-highlight-color: transparent; -webkit-user-select: none; user-select: none; }
+  [data-tap]::before { content: ""; position: absolute; inset: -12px; border-radius: 50%; }
+  [data-tap].pressed { transform: scale(.92); filter: brightness(1.15); }
   .you-c { color: var(--you); }
   .her-c { color: var(--her); }
 
@@ -149,7 +153,7 @@
   .history li:first-child { border-top: 0; }
   .history li p { flex: 1; margin: 0; }
   .who { display: block; font-size: 14px; color: var(--muted); }
-  .history .replay { width: 44px; height: 44px; }
+  .history .replay { width: 52px; height: 52px; }
   .empty { color: var(--muted); margin: 0; }
 
   /* Listen mode */
@@ -333,8 +337,9 @@
   @media (prefers-reduced-motion: reduce) { .reply-btn::after, .now-dot { animation: none !important; } }
   #liveList .mine .en { color: var(--you); font-size: 18px; }
   #liveList .mine-row { display: flex; align-items: center; gap: 12px; }
-  #liveList .mine-play { width: 56px; height: 56px; background: var(--you); color: var(--on-accent); border-color: var(--you); }
-  #liveList .mine-play svg { width: 24px; height: 24px; }
+  #liveList .mine-play { width: 68px; height: 68px; background: var(--you); color: var(--on-accent); border-color: var(--you); }
+  #liveList .mine-play svg { width: 30px; height: 30px; margin-left: 3px; }
+  #liveList .mine-play.playing { background: var(--her); border-color: var(--her); animation: blink 1.2s infinite; }
   #liveList .mine-ur { flex: 1; margin: 4px 0 0; font-family: "Noto Nastaliq Urdu", serif; font-size: 28px; line-height: 2.2; direction: rtl; text-align: right; }
   #liveList .mine-roman { margin: 0; font-size: 18px; font-weight: 700; color: var(--you); }
 
@@ -1123,6 +1128,38 @@ async function addHistory(item) {
 }
 
 const PLAY_SVG = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15l13-7.5z"/></svg>';
+
+/* Reliable play taps.
+   The lists are redrawn whenever a new line arrives, which used to replace the button under your
+   finger mid-tap — so the tap was lost. Now the press is tracked on the page itself and matched to
+   the card by its id, so a redraw in the middle of a tap no longer matters. A small finger drift
+   still counts as a tap; a real scroll doesn't. */
+const tapActions = new Map(); // tap key -> what to do
+const TAP = { maxMove: 24, maxMs: 1500 };
+let press = null, lastTapAt = 0;
+document.addEventListener("pointerdown", (e) => {
+  const b = e.target.closest?.("[data-tap]");
+  press = b ? { key: b.dataset.tap, x: e.clientX, y: e.clientY, t: Date.now() } : null;
+  if (b) b.classList.add("pressed");
+}, { passive: true });
+document.addEventListener("pointerup", (e) => {
+  document.querySelectorAll("[data-tap].pressed").forEach((b) => b.classList.remove("pressed"));
+  const p = press; press = null;
+  if (!p) return;
+  if (Math.hypot(e.clientX - p.x, e.clientY - p.y) > TAP.maxMove || Date.now() - p.t > TAP.maxMs) return;
+  lastTapAt = Date.now();
+  tapActions.get(p.key)?.();
+});
+document.addEventListener("pointercancel", () => {
+  press = null;
+  document.querySelectorAll("[data-tap].pressed").forEach((b) => b.classList.remove("pressed"));
+});
+// Keyboard / VoiceOver activation (no pointer) still works through click.
+document.addEventListener("click", (e) => {
+  const b = e.target.closest?.("[data-tap]");
+  if (!b || Date.now() - lastTapAt < 800) return;
+  tapActions.get(b.dataset.tap)?.();
+});
 function renderHistory() {
   const list = $("#histList");
   list.innerHTML = "";
@@ -1158,11 +1195,12 @@ function renderHistory() {
     b.className = "replay " + (h.dir === "out" ? "you-c" : "her-c");
     b.setAttribute("aria-label", h.dir === "out" ? "Play in Urdu" : "Play in English");
     b.innerHTML = PLAY_SVG;
-    b.onclick = async () => {
+    b.dataset.tap = "hist:" + h.id;
+    tapActions.set("hist:" + h.id, async () => {
       unlock(); setStatus("");
       try { h.dir === "out" ? await speak(h.other, "ur") : await speak(h.en, "en"); }
       catch (e) { setStatus(e.message); }
-    };
+    });
     const acts = document.createElement("div");
     acts.className = "acts";
     const f = document.createElement("button");
@@ -1515,16 +1553,18 @@ async function pump() {
   const prevHeard = live.lastHeard;
   live.lastHeard = heard; // the next chunk's hearing and translation both carry on from this
 
-  // A man speaking English is you: translate it into her language, ready to play.
-  if (heardLang === "english" && soundsLikeRobert(pitch)) { await yourEnglish(line, heard); return; }
+  // Any English heard (yours or theirs) becomes an Urdu card with a play button.
+  // Pitch only decides the label: a man's voice is you, otherwise it's someone else speaking English.
+  const robert = soundsLikeRobert(pitch);
+  if (heardLang === "english") { await yourEnglish(line, heard, robert); return; }
 
   try {
     const context = liveContext(8);
     const res = await api("translate", { direction: "live", lang: state.listenLang, text: heard, heardLang, prevHeard, context, knowledge: knowledgePayload("in", heard) });
     trackClaude(res);
     if (!res.text || res.text.trim() === "-") removeLine(line);
-    // Whisper didn't label it English, but the translator found it was mostly English in a man's voice.
-    else if (res.saidEnglish && soundsLikeRobert(pitch)) await yourEnglish(line, res.text);
+    // Whisper didn't label it English, but the translator found it was mostly English.
+    else if (res.saidEnglish) await yourEnglish(line, res.text, robert);
     else finishLine(line, { en: res.text, orig: heard, confidence: res.confidence, saidEnglish: res.saidEnglish });
   } catch {
     finishLine(line, null, "Couldn't translate this bit.");
@@ -1533,9 +1573,9 @@ async function pump() {
 
 // Turns a room line into one of your reply lines: your English, the translation, and a play button.
 // Nothing is spoken until you tap play.
-async function yourEnglish(line, said) {
+async function yourEnglish(line, said, robert = true) {
   said = String(said || "").trim();
-  Object.assign(line, { who: "you", heardYou: true, en: said, orig: "", state: "pending" });
+  Object.assign(line, { who: "you", heardYou: true, speaker: robert ? "robert" : "them", en: said, orig: "", state: "pending" });
   delete line.confidence; delete line.saidEnglish;
   renderLive();
   try {
@@ -1545,6 +1585,35 @@ async function yourEnglish(line, said) {
   } catch {
     finishLine(line, null, "Couldn't translate what you said.");
   }
+}
+
+/* Playing a reply card. Taps are never ignored: if something is already playing it's cut off
+   and this one plays (tapping the one that's playing stops it). Only blocked while you're
+   recording a reply, because the phone would hear itself. */
+let playing = null;      // tap key of the card currently playing
+let playToken = 0;
+async function playLiveUrdu(l) {
+  const key = "live:" + l.id;
+  if (replyState === "rec") { setStatus("Finish your reply first, then tap play."); return; }
+  unlock(); setStatus("");
+  if (playing) {
+    const same = playing === key;
+    player.pause();          // ends the current speakAndWait
+    if (same) return;
+  }
+  const my = ++playToken;
+  playing = key; markPlaying();
+  if (live.on && !live.paused) pauseMic(); // so the room listener doesn't caption the phone
+  const wasBusy = replyState === "busy";
+  if (!wasBusy) setReply("speaking");
+  try { await speakAndWait(l.orig, "ur"); } catch (e) { if (my === playToken) setStatus(e.message); }
+  if (my !== playToken) return; // another tap took over
+  playing = null; markPlaying();
+  if (!wasBusy && replyState === "speaking") setReply("idle");
+  if (live.on && live.paused && replyState === "idle") await resumeMic();
+}
+function markPlaying() {
+  document.querySelectorAll("[data-tap]").forEach((b) => b.classList.toggle("playing", b.dataset.tap === playing));
 }
 
 /* Transcript — finished lines are backed up to Firestore */
@@ -1564,6 +1633,7 @@ function finishLine(line, data, err) {
     if (typeof line.confidence === "number") rec.confidence = line.confidence;
     if (line.saidEnglish) rec.saidEnglish = true;
     if (line.who) { rec.who = line.who; rec.roman = line.roman || ""; }
+    if (line.speaker) rec.speaker = line.speaker;
     if (uid) setDoc(doc(userCol("live"), line.id), rec).catch(() => {});
   } else { line.state = "failed"; line.en = err; }
   renderLive();
@@ -1571,8 +1641,10 @@ function finishLine(line, data, err) {
 // Recent captions given to the translator, so replies and captions follow the conversation.
 // Only the last 10 minutes — an old conversation from earlier in the day would mislead it.
 const recentLines = (mins) => live.lines.filter((l) => l.state === "done" && l.ts >= Date.now() - mins * 60000);
+// A line is yours unless it's English that was picked up in someone else's voice.
+const isRobertLine = (l) => l.who === "you" && l.speaker !== "them";
 const liveContext = (n) => recentLines(10).slice(-n)
-  .map((l) => (l.who === "you" ? "Robert: " : "") + l.en);
+  .map((l) => (isRobertLine(l) ? "Robert: " : "") + l.en);
 
 /* ---------- "What they're talking about" ----------
    About once a minute, the last few minutes of captions are summarised in a line or two.
@@ -1598,13 +1670,13 @@ function renderGist() {
 async function maybeGist(force = false) {
   if (gist.busy) return;
   const lines = recentLines(GIST.windowMins).filter((l) => l.ts >= live.startedAt - GIST.windowMins * 60000);
-  const theirs = lines.filter((l) => l.who !== "you");
+  const theirs = lines.filter((l) => !isRobertLine(l));
   const fresh = theirs.filter((l) => l.ts > gist.seen).length;
   const due = force || (!gist.text ? theirs.length >= 3 : (Date.now() - gist.at) / 1000 >= GIST.every && fresh >= GIST.minNew);
   if (!due || !theirs.length) return;
   gist.busy = true;
   try {
-    const payload = lines.map((l) => ({ en: l.en, orig: l.orig, confidence: l.confidence, who: l.who === "you" ? "you" : "" }));
+    const payload = lines.map((l) => ({ en: l.en, orig: l.orig, confidence: l.confidence, who: isRobertLine(l) ? "you" : "" }));
     const res = await api("translate", {
       direction: "gist", lang: state.listenLang, lines: payload, previous: gist.text,
       knowledge: knowledgePayload("in", theirs.map((l) => l.orig).join(" ")),
@@ -1636,7 +1708,7 @@ function renderLive() {
     if (l.who === "you") {
       // Your reply: English you said, then the translation in big Urdu letters she can read off the screen.
       li.classList.add("mine");
-      t.textContent = (l.heardYou ? "You (picked up) · " : "You · ") + t.textContent;
+      t.textContent = (l.speaker === "them" ? "English heard · " : l.heardYou ? "You (picked up) · " : "You · ") + t.textContent;
       if (l.state === "done") {
         const acts = document.createElement("span");
         acts.style.cssText = "display:flex;gap:8px;align-items:center";
@@ -1655,15 +1727,9 @@ function renderLive() {
         p.className = "replay you-c mine-play";
         p.setAttribute("aria-label", "Play in Urdu, male voice");
         p.innerHTML = PLAY_SVG;
-        p.onclick = async () => {
-          if (replyState !== "idle") return; // you're mid-reply
-          unlock(); setStatus("");
-          if (live.on && !live.paused) pauseMic(); // so the room listener doesn't caption the phone
-          setReply("speaking");
-          try { await speakAndWait(l.orig, "ur"); } catch (e) { setStatus(e.message); }
-          setReply("idle");
-          if (live.on && live.paused) await resumeMic();
-        };
+        p.dataset.tap = "live:" + l.id;
+        if (playing === "live:" + l.id) p.classList.add("playing");
+        tapActions.set("live:" + l.id, () => playLiveUrdu(l));
         row.append(o, p);
         li.append(row);
       }
@@ -1922,7 +1988,7 @@ $("#replyBtn").onclick = async () => {
   unlock(); // lets the iPhone play the answer later without another tap
   setStatus("");
   if (replyState === "rec") { finishReply(); return; }
-  if (replyState === "speaking") { player.pause(); return; }
+  if (replyState === "speaking") { player.pause(); playToken++; playing = null; markPlaying(); setReply("idle"); if (live.on && live.paused) await resumeMic(); return; }
   if (replyState === "busy") return;
   if (!live.on) { await startLive(); if (!live.on) return; }
   if (live.inSpeech) endChunk(); // send what the room was saying first
