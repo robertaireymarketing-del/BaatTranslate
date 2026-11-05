@@ -225,6 +225,22 @@
   .spend .total { font-weight: 700; font-size: 18px; }
   .spend .amt { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
   .row { display: flex; gap: 10px; margin-top: 20px; }
+
+  /* Billing page */
+  .bills { list-style: none; margin: 14px 0 0; padding: 0; }
+  .bills li { padding: 14px 0; border-top: 1px solid var(--line); }
+  .bills li:first-child { border-top: 0; padding-top: 4px; }
+  .bill-top { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+  .bill-top strong { font-size: 18px; }
+  .bill-top .amt { font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .bills .what { margin: 2px 0 0; font-size: 15px; color: var(--muted); }
+  .bill-links { display: flex; gap: 8px; margin-top: 10px; }
+  .bill-links a {
+    flex: 1; display: flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 10px;
+    border-radius: 12px; border: 1px solid var(--line); background: var(--bg); color: var(--you);
+    font-weight: 700; font-size: 15px; text-decoration: none; text-align: center;
+  }
+  .bill-links a.pay { background: var(--you); border-color: var(--you); color: var(--on-accent); }
   .row button { flex: 1; min-height: 48px; border-radius: 12px; border: 1px solid var(--line); background: var(--bg); }
   .row button.primary { background: var(--you); color: var(--on-accent); border: 0; font-weight: 700; }
 
@@ -547,12 +563,21 @@
   <h3>Spending this month</h3>
   <ul class="spend" id="spendList"></ul>
   <p class="note" id="spendNote"></p>
+  <button class="wide-btn" id="billingBtn">Where you're billed — check usage &amp; pay</button>
   <p class="account" id="accountLine"></p>
 
   <div class="row">
     <button id="signOutBtn">Sign out</button>
     <button class="primary" id="doneBtn">Done</button>
   </div>
+</dialog>
+
+<dialog id="billingDialog">
+  <h2>Where you're billed</h2>
+  <p class="note">Each service bills you separately, on the account you signed up with. The amounts here are the app's own estimates for this month — the real figures are on each site.</p>
+  <ul class="bills" id="billList"></ul>
+  <p class="note">Tip: on Claude, turn on auto-reload so translations never stop because the credit ran out.</p>
+  <div class="row"><button id="billingBack">Back</button><button class="primary" id="billingDone">Done</button></div>
 </dialog>
 
 <dialog id="fixDialog">
@@ -2033,6 +2058,51 @@ $("#wordAdd").onclick = async () => {
   } catch (e) { alert(e.message); }
 };
 $("#wordsDone").onclick = () => $("#wordsDialog").close();
+
+/* ---------- Where you're billed ---------- */
+function renderBilling() {
+  const c = costs(usage);
+  const fb = firebaseConfig.projectId;
+  const bills = [
+    { name: "Claude (Anthropic)", what: "Translating, and the Listen summary. Pay in advance with credit — usually the biggest cost.",
+      amt: c.claude, usage: "https://console.anthropic.com/usage", pay: "https://console.anthropic.com/settings/billing", payLabel: "Add credit" },
+    { name: "Groq", what: "Listen mode hearing. Free unless you've upgraded and added a card.",
+      amt: c.groq, usage: "https://console.groq.com/dashboard/usage", pay: "https://console.groq.com/settings/billing", payLabel: "Billing" },
+    { name: "Microsoft Azure", what: "The Urdu voice and Talk mode hearing. Charged to your card monthly, only past the free allowance.",
+      amt: c.azStt + c.azTts, usage: "https://portal.azure.com/#blade/Microsoft_Azure_CostManagement/Menu/overview",
+      pay: "https://portal.azure.com/#blade/Microsoft_Azure_Billing/ModernBillingMenuBlade/Overview", payLabel: "Billing" },
+    { name: "Netlify", what: "Runs the app. Free plan — only bills if you upgrade. Billing is under your team's settings.",
+      amt: null, usage: "https://app.netlify.com/", pay: "https://app.netlify.com/", payLabel: "Open Netlify", one: true },
+    { name: "Firebase (Google)", what: "Sign-in and backups. Free plan — only bills if you upgrade.",
+      amt: null, usage: `https://console.firebase.google.com/project/${fb}/usage`, pay: `https://console.firebase.google.com/project/${fb}/usage/details`, payLabel: "Plan & billing" },
+  ];
+  const list = $("#billList");
+  list.innerHTML = "";
+  bills.forEach((b) => {
+    const li = document.createElement("li");
+    const top = document.createElement("div");
+    top.className = "bill-top";
+    const n = document.createElement("strong"); n.textContent = b.name;
+    const a = document.createElement("span"); a.className = "amt";
+    a.textContent = b.amt == null ? "Free" : "~" + gbp(b.amt);
+    top.append(n, a);
+    const w = document.createElement("p"); w.className = "what"; w.textContent = b.what;
+    const links = document.createElement("div"); links.className = "bill-links";
+    const link = (href, label, cls) => {
+      const el = document.createElement("a");
+      el.href = href; el.target = "_blank"; el.rel = "noopener"; el.textContent = label;
+      if (cls) el.className = cls;
+      return el;
+    };
+    if (b.one) links.append(link(b.pay, b.payLabel));
+    else links.append(link(b.usage, "Check usage"), link(b.pay, b.payLabel, "pay"));
+    li.append(top, w, links);
+    list.append(li);
+  });
+}
+$("#billingBtn").onclick = () => { $("#settings").close(); rollMonth(); renderBilling(); $("#billingDialog").showModal(); };
+$("#billingBack").onclick = () => { $("#billingDialog").close(); renderSpend(); $("#settings").showModal(); };
+$("#billingDone").onclick = () => $("#billingDialog").close();
 
 /* ---------- Refresh: pull the latest version of the app ---------- */
 $("#refreshBtn").onclick = async () => {
